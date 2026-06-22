@@ -1,0 +1,9 @@
+# Deny line-ending normalization for binary files to prevent corruption (especially gradle-wrapper.jar)
+*.jar binary
+*.png binary
+*.webp binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.keystore binary
+*.jks binary

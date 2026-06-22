@@ -26,6 +26,17 @@ jobs:
       - name: Grant Execute Permission for Gradle Wrapper
         run: chmod +x gradlew
 
+      - name: Keep Gradle Wrapper Safe (Self-Healing)
+        run: |
+          mkdir -p gradle/wrapper
+          # Direct verification of gradle-wrapper.jar integrity
+          if ! jar tf gradle/wrapper/gradle-wrapper.jar > /dev/null 2>&1; then
+            echo "⚠️ gradle-wrapper.jar is corrupted or invalid. Downloading official clean JAR..."
+            curl -sSLo gradle/wrapper/gradle-wrapper.jar "https://github.com/gradle/gradle/raw/v8.12.0/gradle/wrapper/gradle-wrapper.jar"
+          else
+            echo "✅ gradle-wrapper.jar is valid."
+          fi
+
       - name: Create Placeholder Environment File
         run: |
           touch .env
