@@ -1,0 +1,6 @@
+{
+  "name": "5040 Panel",
+  "description": "An integrated web dashboard and chat client for 5040 services.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
