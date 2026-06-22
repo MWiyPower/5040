@@ -341,14 +341,7 @@ fun MainScreen(
     label = "BubbleReveal"
   )
 
-  val iconRotation by animateFloatAsState(
-    targetValue = if (chatExpanded) 360f else 0f,
-    animationSpec = spring(
-      dampingRatio = Spring.DampingRatioMediumBouncy,
-      stiffness = Spring.StiffnessLow
-    ),
-    label = "IconRotation"
-  )
+  val iconRotation = 0f
 
   val fabYOffset by animateDpAsState(
     targetValue = if (chatExpanded) (-48).dp else 0.dp,
@@ -644,15 +637,13 @@ fun MainScreen(
           
           Button(
             onClick = {
+              hasWebLoadError = false
+              isMainLoaded = false
+              isChatLoaded = false
               val online = isOnline(context)
               isOnlineState = online
-              if (online) {
-                hasWebLoadError = false
-                isMainLoaded = false
-                isChatLoaded = false
-                mainWebViewRef?.loadUrl("https://panel.5040.me")
-                chatWebViewRef?.loadUrl("https://chat.5040.me")
-              }
+              mainWebViewRef?.loadUrl("https://panel.5040.me")
+              chatWebViewRef?.loadUrl("https://chat.5040.me")
             },
             colors = ButtonDefaults.buttonColors(
               containerColor = Color.White,

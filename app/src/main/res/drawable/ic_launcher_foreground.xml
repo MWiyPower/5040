@@ -5,44 +5,44 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Stylized "50 40" vertically stacked, elegant geometric outline -->
+    <!-- Stylized "50 40" vertically stacked, highly readable, standard digital geometric rendering -->
     <group android:name="logo_5040_vertical">
         <!-- Row 1: "5" and "0" -->
         <!-- "5" -->
         <path
-            android:fillColor="#00000000"
-            android:strokeColor="#FFFFFF"
-            android:strokeWidth="4"
+            android:strokeColor="@color/ic_launcher_foreground_color"
+            android:strokeWidth="5"
             android:strokeLineCap="round"
             android:strokeLineJoin="round"
-            android:pathData="M 44,28 H 32 V 38 H 44 V 49 H 32" />
+            android:fillColor="#00000000"
+            android:pathData="M 44,25 H 32 V 37 H 40 C 44,37 45.5,39 45.5,42.5 V 43.5 C 45.5,47 43,49 39.5,49 H 32" />
 
         <!-- "0" -->
         <path
-            android:fillColor="#00000000"
-            android:strokeColor="#FFFFFF"
-            android:strokeWidth="4"
+            android:strokeColor="@color/ic_launcher_foreground_color"
+            android:strokeWidth="5"
             android:strokeLineCap="round"
             android:strokeLineJoin="round"
-            android:pathData="M 54,34 C 54,30.5 56.5,28 60,28 H 62 C 65.5,28 68,30.5 68,34 V 43 C 68,46.5 65.5,49 62,49 H 60 C 56.5,49 54,46.5 54,43 Z" />
+            android:fillColor="#00000000"
+            android:pathData="M 65,25 C 71,25 75,29 75,37 V 37 C 75,45 71,49 65,49 C 59,49 55,45 55,37 V 37 C 55,29 59,25 65,25 Z" />
 
         <!-- Row 2: "4" and "0" -->
         <!-- "4" -->
         <path
-            android:fillColor="#00000000"
-            android:strokeColor="#FFFFFF"
-            android:strokeWidth="4"
+            android:strokeColor="@color/ic_launcher_foreground_color"
+            android:strokeWidth="5"
             android:strokeLineCap="round"
             android:strokeLineJoin="round"
-            android:pathData="M 40,58 L 32,71 H 46 M 40,58 V 78" />
+            android:fillColor="#00000000"
+            android:pathData="M 42,59 L 32,73 H 46 M 41,59 V 83" />
 
         <!-- "0" -->
         <path
-            android:fillColor="#00000000"
-            android:strokeColor="#FFFFFF"
-            android:strokeWidth="4"
+            android:strokeColor="@color/ic_launcher_foreground_color"
+            android:strokeWidth="5"
             android:strokeLineCap="round"
             android:strokeLineJoin="round"
-            android:pathData="M 54,64 C 54,60.5 56.5,58 60,58 H 62 C 65.5,58 68,60.5 68,64 V 73 C 68,76.5 65.5,78 62,78 H 60 C 56.5,78 54,76.5 54,73 Z" />
+            android:fillColor="#00000000"
+            android:pathData="M 65,59 C 71,59 75,63 75,71 V 71 C 75,79 71,83 65,83 C 59,83 55,79 55,71 V 71 C 55,63 59,59 65,59 Z" />
     </group>
 </vector>
