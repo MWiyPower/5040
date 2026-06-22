@@ -1,20 +1,30 @@
-steps:
-  - uses: actions/checkout@v5
+name: Build APK
 
-  - name: Setup Java
-    uses: actions/setup-java@v5
-    with:
-      distribution: temurin
-      java-version: '17'
+on:
+  workflow_dispatch:
 
-  - name: Grant execute permission
-    run: chmod +x gradlew
+jobs:
+  build:
+    runs-on: ubuntu-latest
 
-  - name: Build Debug APK
-    run: ./gradlew assembleDebug
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
 
-  - name: Upload APK
-    uses: actions/upload-artifact@v4
-    with:
-      name: app-debug
-      path: app/build/outputs/apk/debug/*.apk
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/*.apk
