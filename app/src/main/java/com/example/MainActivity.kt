@@ -20,28 +20,35 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.geometry.Size
@@ -110,44 +117,46 @@ class MainActivity : ComponentActivity() {
     enableEdgeToEdge()
     setContent {
       MyApplicationTheme {
-        MainScreen(
-          onOpenFilePicker = { callback, acceptTypes, allowMultiple ->
-            filePathCallback?.onReceiveValue(null)
-            filePathCallback = callback
-            val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
-              addCategory(Intent.CATEGORY_OPENABLE)
-              type = "*/*"
-              if (acceptTypes != null && acceptTypes.isNotEmpty()) {
-                putExtra(Intent.EXTRA_MIME_TYPES, acceptTypes)
-              }
-              if (allowMultiple) {
-                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-              }
-            }
-            filePickerLauncher.launch(Intent.createChooser(intent, "انتخاب فایل"))
-          },
-          onPermissionRequest = { request ->
-            permissionRequestCallback = request
-            val androidPermissions = ArrayList<String>()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-              for (resource in request.resources) {
-                if (resource == PermissionRequest.RESOURCE_VIDEO_CAPTURE) {
-                  androidPermissions.add(android.Manifest.permission.CAMERA)
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+          MainScreen(
+            onOpenFilePicker = { callback, acceptTypes, allowMultiple ->
+              filePathCallback?.onReceiveValue(null)
+              filePathCallback = callback
+              val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                if (acceptTypes != null && acceptTypes.isNotEmpty()) {
+                  putExtra(Intent.EXTRA_MIME_TYPES, acceptTypes)
                 }
-                if (resource == PermissionRequest.RESOURCE_AUDIO_CAPTURE) {
-                  androidPermissions.add(android.Manifest.permission.RECORD_AUDIO)
+                if (allowMultiple) {
+                  putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                 }
               }
-            }
-            if (androidPermissions.isNotEmpty()) {
-              permissionLauncher.launch(androidPermissions.toTypedArray())
-            } else {
+              filePickerLauncher.launch(Intent.createChooser(intent, "انتخاب فایل"))
+            },
+            onPermissionRequest = { request ->
+              permissionRequestCallback = request
+              val androidPermissions = ArrayList<String>()
               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                request.grant(request.resources)
+                for (resource in request.resources) {
+                  if (resource == PermissionRequest.RESOURCE_VIDEO_CAPTURE) {
+                    androidPermissions.add(android.Manifest.permission.CAMERA)
+                  }
+                  if (resource == PermissionRequest.RESOURCE_AUDIO_CAPTURE) {
+                    androidPermissions.add(android.Manifest.permission.RECORD_AUDIO)
+                  }
+                }
+              }
+              if (androidPermissions.isNotEmpty()) {
+                permissionLauncher.launch(androidPermissions.toTypedArray())
+              } else {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                  request.grant(request.resources)
+                }
               }
             }
-          }
-        )
+          )
+        }
       }
     }
   }
@@ -233,7 +242,8 @@ fun MainScreen(
   var chatExpanded by remember { mutableStateOf(false) }
   var chatInitialized by remember { mutableStateOf(false) }
 
-  var fabPosition by remember { mutableStateOf(Offset.Zero) }
+  var containerCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+  var fabPosition by remember { mutableStateOf(Offset(1000f, 2000f)) }
 
   val bubbleProgress by animateFloatAsState(
     targetValue = if (chatExpanded) 1f else 0f,
@@ -253,6 +263,89 @@ fun MainScreen(
   var mainWebViewRef by remember { mutableStateOf<WebView?>(null) }
   var chatWebViewRef by remember { mutableStateOf<WebView?>(null) }
 
+  val context = LocalContext.current
+  val mainWebView = remember {
+    WebView(context).apply {
+      layoutParams = ViewGroup.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT
+      )
+      configureWebViewSettings(this)
+      
+      webViewClient = object : WebViewClient() {
+        override fun onPageFinished(view: WebView?, url: String?) {
+          super.onPageFinished(view, url)
+          isMainLoaded = true
+          CookieManager.getInstance().flush()
+        }
+      }
+      webChromeClient = object : WebChromeClient() {
+        override fun onShowFileChooser(
+          webView: WebView?,
+          filePathCallback: ValueCallback<Array<Uri>>?,
+          fileChooserParams: FileChooserParams?
+        ): Boolean {
+          val acceptTypes = fileChooserParams?.acceptTypes
+          val allowMultiple = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE
+          } else {
+            false
+          }
+          onOpenFilePicker(filePathCallback, acceptTypes, allowMultiple)
+          return true
+        }
+
+        override fun onPermissionRequest(request: PermissionRequest) {
+          onPermissionRequest(request)
+        }
+      }
+      
+      mainWebViewRef = this
+      loadUrl("https://panel.5040.me")
+    }
+  }
+
+  val chatWebView = remember {
+    WebView(context).apply {
+      layoutParams = ViewGroup.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT
+      )
+      configureWebViewSettings(this)
+      
+      webViewClient = object : WebViewClient() {
+        override fun onPageFinished(view: WebView?, url: String?) {
+          super.onPageFinished(view, url)
+          isChatLoaded = true
+          CookieManager.getInstance().flush()
+        }
+      }
+      webChromeClient = object : WebChromeClient() {
+        override fun onShowFileChooser(
+          webView: WebView?,
+          filePathCallback: ValueCallback<Array<Uri>>?,
+          fileChooserParams: FileChooserParams?
+        ): Boolean {
+          val acceptTypes = fileChooserParams?.acceptTypes
+          val allowMultiple = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE
+          } else {
+            false
+          }
+          onOpenFilePicker(filePathCallback, acceptTypes, allowMultiple)
+          return true
+        }
+
+        override fun onPermissionRequest(request: PermissionRequest) {
+          onPermissionRequest(request)
+        }
+      }
+      
+      chatWebViewRef = this
+      loadUrl("https://chat.5040.me")
+    }
+  }
+
   BackHandler(enabled = chatExpanded || (mainWebViewRef?.canGoBack() == true)) {
     if (chatExpanded) {
       if (chatWebViewRef?.canGoBack() == true) {
@@ -265,173 +358,101 @@ fun MainScreen(
     }
   }
 
-  Scaffold(
-    modifier = Modifier.fillMaxSize(),
-    floatingActionButton = {
-      FloatingActionButton(
-        onClick = {
-          chatExpanded = !chatExpanded
-        },
-        modifier = Modifier
-          .padding(8.dp)
-          .onGloballyPositioned { coordinates ->
-            val position = coordinates.positionInWindow()
-            val size = coordinates.size
-            fabPosition = Offset(
-              x = position.x + size.width / 2f,
-              y = position.y + size.height / 2f
-            )
-          },
-        shape = CircleShape,
-        containerColor = if (chatExpanded) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
-        contentColor = if (chatExpanded) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .onGloballyPositioned { containerCoordinates = it }
+  ) {
+    // Main Panel WebView
+    Box(modifier = Modifier.fillMaxSize()) {
+      AndroidView(
+        factory = { mainWebView },
+        modifier = Modifier.fillMaxSize()
+      )
+
+      AnimatedVisibility(
+        visible = !isMainLoaded,
+        enter = fadeIn(),
+        exit = fadeOut()
       ) {
-        if (chatExpanded) {
-          Icon(
-            imageVector = Icons.Default.Close,
-            contentDescription = "بستن گفتگو",
-            modifier = Modifier.size(28.dp)
-          )
-        } else {
-          Icon(
-            imageVector = Icons.Default.Send,
-            contentDescription = "گفتگو",
-            modifier = Modifier.size(28.dp)
-          )
-        }
+        LoadingScreen(message = "در حال ورود به پنل...")
       }
     }
-  ) { innerPadding ->
-    Box(
-      modifier = Modifier
-        .fillMaxSize()
-        .padding(innerPadding)
-    ) {
-      // Main Panel WebView
-      Box(modifier = Modifier.fillMaxSize()) {
-        AndroidView(
-          factory = { ctx ->
-            WebView(ctx).apply {
-              layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-              )
-              configureWebViewSettings(this)
-              
-              webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView?, url: String?) {
-                  super.onPageFinished(view, url)
-                  isMainLoaded = true
-                  CookieManager.getInstance().flush()
-                }
-              }
-              webChromeClient = object : WebChromeClient() {
-                override fun onShowFileChooser(
-                  webView: WebView?,
-                  filePathCallback: ValueCallback<Array<Uri>>?,
-                  fileChooserParams: FileChooserParams?
-                ): Boolean {
-                  val acceptTypes = fileChooserParams?.acceptTypes
-                  val allowMultiple = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE
-                  } else {
-                    false
-                  }
-                  onOpenFilePicker(filePathCallback, acceptTypes, allowMultiple)
-                  return true
-                }
 
-                override fun onPermissionRequest(request: PermissionRequest) {
-                  onPermissionRequest(request)
-                }
-              }
-              
-              mainWebViewRef = this
-              loadUrl("https://panel.5040.me")
-            }
-          },
+    // Chat WebView Overlay (Bubble Reveal shape animated)
+    if (chatInitialized) {
+      val inputModifier = if (chatExpanded) {
+        Modifier.pointerInput(Unit) {}
+      } else {
+        Modifier
+      }
+
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .graphicsLayer {
+            alpha = if (bubbleProgress > 0f) 1f else 0f
+          }
+          .clip(CircularRevealShape(bubbleProgress, fabPosition))
+          .then(inputModifier)
+      ) {
+        AndroidView(
+          factory = { chatWebView },
           modifier = Modifier.fillMaxSize()
         )
 
         AnimatedVisibility(
-          visible = !isMainLoaded,
+          visible = !isChatLoaded,
           enter = fadeIn(),
           exit = fadeOut()
         ) {
-          LoadingScreen(title = "پنل ۵۰۴۰")
+          LoadingScreen(message = "در حال ورود به چت...")
         }
       }
+    }
 
-      // Chat WebView Overlay (Bubble Reveal shape animated)
-      if (chatInitialized) {
-        val isVisible = bubbleProgress > 0f
-        if (isVisible) {
-          Box(
-            modifier = Modifier
-              .fillMaxSize()
-              .clip(CircularRevealShape(bubbleProgress, fabPosition))
-              .pointerInput(Unit) {} // Consume touch events
-          ) {
-            AndroidView(
-              factory = { ctx ->
-                WebView(ctx).apply {
-                  layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                  )
-                  configureWebViewSettings(this)
-                  
-                  webViewClient = object : WebViewClient() {
-                    override fun onPageFinished(view: WebView?, url: String?) {
-                      super.onPageFinished(view, url)
-                      isChatLoaded = true
-                      CookieManager.getInstance().flush()
-                    }
-                  }
-                  webChromeClient = object : WebChromeClient() {
-                    override fun onShowFileChooser(
-                      webView: WebView?,
-                      filePathCallback: ValueCallback<Array<Uri>>?,
-                      fileChooserParams: FileChooserParams?
-                    ): Boolean {
-                      val acceptTypes = fileChooserParams?.acceptTypes
-                      val allowMultiple = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                        fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE
-                      } else {
-                        false
-                      }
-                      onOpenFilePicker(filePathCallback, acceptTypes, allowMultiple)
-                      return true
-                    }
-
-                    override fun onPermissionRequest(request: PermissionRequest) {
-                      onPermissionRequest(request)
-                    }
-                  }
-                  
-                  chatWebViewRef = this
-                  loadUrl("https://chat.5040.me")
-                }
-              },
-              modifier = Modifier.fillMaxSize()
+    // Floating Action Button Overlay (Completely Circular, bottom-right aligned in RTL)
+    Box(
+      modifier = Modifier
+        .align(Alignment.BottomStart)
+        .padding(bottom = 24.dp, start = 24.dp)
+        .size(56.dp)
+        .shadow(elevation = 6.dp, shape = CircleShape)
+        .background(
+          color = if (chatExpanded) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.primaryContainer,
+          shape = CircleShape
+        )
+        .clip(CircleShape)
+        .clickable { chatExpanded = !chatExpanded }
+        .onGloballyPositioned { coordinates ->
+          containerCoordinates?.let { parent ->
+            val localPosition = parent.localPositionOf(coordinates, Offset.Zero)
+            val size = coordinates.size
+            fabPosition = Offset(
+              x = localPosition.x + size.width / 2f,
+              y = localPosition.y + size.height / 2f
             )
-
-            AnimatedVisibility(
-              visible = !isChatLoaded,
-              enter = fadeIn(),
-              exit = fadeOut()
-            ) {
-              LoadingScreen(title = "گفتگوی ۵۰۴۰")
-            }
           }
-        }
+        },
+      contentAlignment = Alignment.Center
+    ) {
+      if (chatExpanded) {
+        PanelLogoIcon(
+          modifier = Modifier.size(24.dp),
+          color = MaterialTheme.colorScheme.onSecondaryContainer
+        )
+      } else {
+        ChatLogoIcon(
+          modifier = Modifier.size(24.dp),
+          color = MaterialTheme.colorScheme.onPrimaryContainer
+        )
       }
     }
   }
 }
 
 @Composable
-fun LoadingScreen(title: String) {
+fun LoadingScreen(message: String) {
   Box(
     modifier = Modifier
       .fillMaxSize()
@@ -444,36 +465,79 @@ fun LoadingScreen(title: String) {
       verticalArrangement = Arrangement.Center,
       modifier = Modifier.padding(24.dp)
     ) {
-      Card(
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        shape = MaterialTheme.shapes.large,
-        modifier = Modifier.padding(16.dp)
-      ) {
-        Column(
-          modifier = Modifier.padding(32.dp),
-          horizontalAlignment = Alignment.CenterHorizontally,
-          verticalArrangement = Arrangement.Center
-        ) {
-          CircularProgressIndicator(
-            color = MaterialTheme.colorScheme.primary,
-            strokeWidth = 4.dp,
-            modifier = Modifier.size(56.dp)
-          )
-          Spacer(modifier = Modifier.height(24.dp))
-          Text(
-            text = title,
-            style = MaterialTheme.typography.titleLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-          )
-          Spacer(modifier = Modifier.height(8.dp))
-          Text(
-            text = stringResource(R.string.loading_text),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-          )
-        }
-      }
+      CircularProgressIndicator(
+        color = MaterialTheme.colorScheme.primary,
+        strokeWidth = 4.dp,
+        modifier = Modifier.size(56.dp)
+      )
+      Spacer(modifier = Modifier.height(24.dp))
+      Text(
+        text = message,
+        style = MaterialTheme.typography.titleMedium,
+        color = MaterialTheme.colorScheme.onBackground,
+        textAlign = TextAlign.Right
+      )
     }
+  }
+}
+
+@Composable
+fun PanelLogoIcon(modifier: Modifier = Modifier, color: androidx.compose.ui.graphics.Color) {
+  Canvas(modifier = modifier) {
+    val w = size.width
+    val h = size.height
+    
+    // Top-Left Square (smaller)
+    drawRect(
+      color = color,
+      topLeft = Offset(0f, 0f),
+      size = Size(w * 0.35f, h * 0.45f)
+    )
+    
+    // Bottom-Left Square (smaller)
+    drawRect(
+      color = color,
+      topLeft = Offset(0f, h * 0.55f),
+      size = Size(w * 0.35f, h * 0.45f)
+    )
+    
+    // Top-Right Square (wider/larger right side)
+    drawRect(
+      color = color,
+      topLeft = Offset(w * 0.45f, 0f),
+      size = Size(w * 0.55f, h * 0.45f)
+    )
+    
+    // Bottom-Right Square (wider/larger right side)
+    drawRect(
+      color = color,
+      topLeft = Offset(w * 0.45f, h * 0.55f),
+      size = Size(w * 0.55f, h * 0.45f)
+    )
+  }
+}
+
+@Composable
+fun ChatLogoIcon(modifier: Modifier = Modifier, color: androidx.compose.ui.graphics.Color) {
+  Canvas(modifier = modifier) {
+    val w = size.width
+    val h = size.height
+    
+    // Main rectangle body (takes 75% height) with rounded corners
+    drawRoundRect(
+      color = color,
+      topLeft = Offset(0f, 0f),
+      size = Size(w, h * 0.75f),
+      cornerRadius = androidx.compose.ui.geometry.CornerRadius(4.dp.toPx(), 4.dp.toPx())
+    )
+    
+    // Tail triangle coming out from the bottom-right corner:
+    val path = Path().apply {
+      moveTo(w * 0.70f, h * 0.75f)
+      lineTo(w * 0.95f, h * 0.75f)
+      lineTo(w * 0.95f, h * 1.0f)
+      close()
+    }
+    drawPath(path = path, color = color)
   }
 }
