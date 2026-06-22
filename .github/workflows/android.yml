@@ -26,10 +26,7 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 9.3.1
-
-      - name: Regenerate Wrapper (Ensures No Corrupt JARs)
-        run: gradle wrapper
+          gradle-version: 8.12 # Matching the standard gradle version compatible with Android build
 
       - name: Create Placeholder Environment File
         run: |
@@ -37,7 +34,7 @@ jobs:
           echo "GEMINI_API_KEY=placeholder_api_key" >> .env
 
       - name: Build Android App (APKs)
-        run: ./gradlew assembleDebug assembleRelease
+        run: gradle :app:assembleDebug :app:assembleRelease
 
       - name: Upload APKs Artifacts
         uses: actions/upload-artifact@v4
