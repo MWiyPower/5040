@@ -79,23 +79,12 @@ private const val JS_BYPASS_WARNINGS = "javascript:(function() { " +
     "window.prompt = function() { return null; }; " +
     "var style = document.createElement('style'); " +
     "style.type = 'text/css'; " +
-    "style.innerHTML = '.old-browser, #old-browser, .browser-upgrade, .outdated-browser, .browser-alert, [class*=\\'update-browser\\'], [class*=\\'old-browser\\'], [id*=\\'update-browser\\'], [id*=\\'old-browser\\'], [class*=\\'unsupported\\'], [id*=\\'unsupported\\'], [class*=\\'warning\\'], [id*=\\'warning\\'] { display: none !important; visibility: hidden !important; height: 0 !important; opacity: 0 !important; pointer-events: none !important; }'; " +
+    "style.innerHTML = '.old-browser, #old-browser, .browser-upgrade, .outdated-browser, .browser-alert, [class*=\\'update-browser\\'], [class*=\\'old-browser\\'], [id*=\\'update-browser\\'], [id*=\\'old-browser\\'], [class*=\\'unsupported\\'], [id*=\\'unsupported\\'], [class*=\\'warning\\'], [id*=\\'warning\\'] { display: none !important; visibility: hidden !important; height: 0 !important; opacity: 0 !important; pointer-events: none !important; } html, body { touch-action: pan-x pan-y !important; }'; " +
     "document.head.appendChild(style); " +
     "var meta = document.createElement('meta'); " +
     "meta.name = 'viewport'; " +
     "meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, shrink-to-fit=no'; " +
     "document.head.appendChild(meta); " +
-    "document.addEventListener('gesturestart', function(e) { e.preventDefault(); }, { passive: false }); " +
-    "document.addEventListener('gesturechange', function(e) { e.preventDefault(); }, { passive: false }); " +
-    "document.addEventListener('touchmove', function(e) { if (e.scale !== 1) { e.preventDefault(); } }, { passive: false }); " +
-    "var lastTouchEnd = 0; " +
-    "document.addEventListener('touchend', function(e) { " +
-    "  var now = (new Date()).getTime(); " +
-    "  if (now - lastTouchEnd <= 300) { " +
-    "    e.preventDefault(); " +
-    "  } " +
-    "  lastTouchEnd = now; " +
-    "}, false); " +
     "var checkAndRemove = function() { " +
     "  var rx = /\\u0642\\u062f\\u06cc\\u0645\\u06cc|\\u0628\\u0631\\u0648\\u0632\\u0631\\u0633\\u0627\\u0646\\u06cc|\\u0622\\u067e\\u062f\\u06cc\\u062a|\\u0646\\u0633\\u062e\\u0647|browser|update|support|old|outdated/i; " +
     "  var elems = document.querySelectorAll('div, section, dialog, p, span, h1, h2, h3'); " +
@@ -111,6 +100,27 @@ private const val JS_BYPASS_WARNINGS = "javascript:(function() { " +
     "}; " +
     "checkAndRemove(); " +
     "setInterval(checkAndRemove, 500); " +
+    "var addInputListeners = function() { " +
+    "  var inputs = document.querySelectorAll('input'); " +
+    "  for (var i = 0; i < inputs.length; i++) { " +
+    "    if (inputs[i].dataset.listenerAdded) continue; " +
+    "    inputs[i].dataset.listenerAdded = 'true'; " +
+    "    var callback = function() { " +
+    "      var type = this.getAttribute('type') || ''; " +
+    "      var name = this.getAttribute('name') || ''; " +
+    "      var id = this.getAttribute('id') || ''; " +
+    "      if (type === 'password' || type === 'email' || type === 'text' || name.indexOf('user') !== -1 || name.indexOf('email') !== -1 || id.indexOf('user') !== -1 || id.indexOf('email') !== -1) { " +
+    "        if (window.AndroidApp && typeof window.AndroidApp.showCredentials === 'function') { " +
+    "          window.AndroidApp.showCredentials(); " +
+    "        } " +
+    "      } " +
+    "    }; " +
+    "    inputs[i].addEventListener('focus', callback); " +
+    "    inputs[i].addEventListener('click', callback); " +
+    "  } " +
+    "}; " +
+    "addInputListeners(); " +
+    "setInterval(addInputListeners, 1000); " +
     "})()"
 
 class MainActivity : ComponentActivity() {
@@ -394,6 +404,12 @@ fun MainScreen(
       )
       configureWebViewSettings(this)
       
+      addJavascriptInterface(WebAppInterface {
+        (context as? Activity)?.runOnUiThread {
+          showCredentialsSheet = true
+        }
+      }, "AndroidApp")
+      
       webViewClient = object : WebViewClient() {
         override fun onPageFinished(view: WebView?, url: String?) {
           super.onPageFinished(view, url)
@@ -487,6 +503,12 @@ fun MainScreen(
         ViewGroup.LayoutParams.MATCH_PARENT
       )
       configureWebViewSettings(this)
+      
+      addJavascriptInterface(WebAppInterface {
+        (context as? Activity)?.runOnUiThread {
+          showCredentialsSheet = true
+        }
+      }, "AndroidApp")
       
       webViewClient = object : WebViewClient() {
         override fun onPageFinished(view: WebView?, url: String?) {
@@ -747,29 +769,6 @@ fun MainScreen(
             )
           }
         }
-      }
-
-      // Credential Manager FAB (Bottom-Left Side, completely Circular absolute)
-      Box(
-        modifier = Modifier
-          .align(AbsoluteAlignment.BottomLeft)
-          .absolutePadding(bottom = 24.dp, left = 24.dp)
-          .size(56.dp)
-          .shadow(elevation = 6.dp, shape = CircleShape)
-          .background(
-            color = MaterialTheme.colorScheme.tertiaryContainer,
-            shape = CircleShape
-          )
-          .clip(CircleShape)
-          .clickable { showCredentialsSheet = true },
-        contentAlignment = Alignment.Center
-      ) {
-        Icon(
-          imageVector = Icons.Filled.Lock,
-          contentDescription = "مدیریت رمزها",
-          tint = MaterialTheme.colorScheme.onTertiaryContainer,
-          modifier = Modifier.size(24.dp)
-        )
       }
 
       // Floating Action Button Overlay (Completely Circular, bottom-right side absolute)
@@ -1205,3 +1204,11 @@ fun CredentialsDialog(
     }
   )
 }
+
+class WebAppInterface(private val onShowCredentials: () -> Unit) {
+  @JavascriptInterface
+  fun showCredentials() {
+    onShowCredentials()
+  }
+}
+
