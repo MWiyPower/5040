@@ -6,6 +6,30 @@ plugins {
   alias(libs.plugins.secrets)
 }
 
+// Helper function to read secrets from system environment or .env file
+fun getSecret(key: String, defaultValue: String = ""): String {
+  val envVal = System.getenv(key)
+  if (!envVal.isNullOrBlank()) return envVal
+
+  val envFile = file("${rootDir}/.env")
+  if (envFile.exists()) {
+    try {
+      val lines = envFile.readLines()
+      for (line in lines) {
+        val trimmed = line.trim()
+        if (trimmed.startsWith("#") || !trimmed.contains("=")) continue
+        val parts = trimmed.split("=", limit = 2)
+        if (parts.size == 2 && parts[0].trim() == key) {
+          return parts[1].trim().removeSurrounding("\"").removeSurrounding("'")
+        }
+      }
+    } catch (e: Exception) {
+      // Ignore
+    }
+  }
+  return defaultValue
+}
+
 android {
   namespace = "com.example"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
@@ -21,8 +45,32 @@ android {
   }
 
   signingConfigs {
-    // Both release and debug will use the built-in automatic debug signature
-    // to ensure that the app can be compiled and installed anywhere (e.g., GitHub, local build) without requiring signing files or credentials.
+    create("release") {
+      val keystorePath = getSecret("KEYSTORE_PATH", "${rootDir}/debug.keystore")
+      val keystoreFile = file(keystorePath)
+      val storePasswordVal = getSecret("STORE_PASSWORD", "android")
+      val keyAliasVal = getSecret("KEY_ALIAS", "androiddebugkey")
+      val keyPasswordVal = getSecret("KEY_PASSWORD", "android")
+
+      if (keystoreFile.exists()) {
+        storeFile = keystoreFile
+        storePassword = storePasswordVal
+        keyAlias = keyAliasVal
+        keyPassword = keyPasswordVal
+      } else {
+        // Fallback to local auto-generated debug signature if the specified keystore does not exist
+        storeFile = file("${rootDir}/debug.keystore")
+        storePassword = "android"
+        keyAlias = "androiddebugkey"
+        keyPassword = "android"
+      }
+    }
+    create("debugConfig") {
+      storeFile = file("${rootDir}/debug.keystore")
+      storePassword = "android"
+      keyAlias = "androiddebugkey"
+      keyPassword = "android"
+    }
   }
 
   buildTypes {
@@ -30,10 +78,10 @@ android {
       isCrunchPngs = false
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      signingConfig = signingConfigs.getByName("debug")
+      signingConfig = signingConfigs.getByName("release")
     }
     debug {
-      signingConfig = signingConfigs.getByName("debug")
+      signingConfig = signingConfigs.getByName("debugConfig")
     }
   }
   compileOptions {

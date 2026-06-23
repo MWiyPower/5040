@@ -21,17 +21,21 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 8.12 # Matching the standard gradle version compatible with Android build
+          gradle-version: 8.12 # Bypasses gradle-wrapper.jar by installing Gradle globally
 
       - name: Create Placeholder Environment File
         run: |
           touch .env
           echo "GEMINI_API_KEY=placeholder_api_key" >> .env
+          # If you have developer keystore properties as GitHub secrets, you can append them here:
+          # echo "KEYSTORE_PATH=${{ secrets.KEYSTORE_PATH }}" >> .env
+          # echo "STORE_PASSWORD=${{ secrets.STORE_PASSWORD }}" >> .env
+          # echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> .env
+          # echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> .env
 
       - name: Build Android App (APKs)
         run: gradle :app:assembleDebug :app:assembleRelease
