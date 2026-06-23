@@ -26,6 +26,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -42,6 +43,13 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Info
+import android.webkit.JavascriptInterface
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.AbsoluteAlignment
@@ -79,7 +87,7 @@ private const val JS_BYPASS_WARNINGS = "javascript:(function() { " +
     "window.prompt = function() { return null; }; " +
     "var style = document.createElement('style'); " +
     "style.type = 'text/css'; " +
-    "style.innerHTML = '.old-browser, #old-browser, .browser-upgrade, .outdated-browser, .browser-alert, [class*=\\'update-browser\\'], [class*=\\'old-browser\\'], [id*=\\'update-browser\\'], [id*=\\'old-browser\\'], [class*=\\'unsupported\\'], [id*=\\'unsupported\\'], [class*=\\'warning\\'], [id*=\\'warning\\'] { display: none !important; visibility: hidden !important; height: 0 !important; opacity: 0 !important; pointer-events: none !important; } html, body { touch-action: pan-x pan-y !important; }'; " +
+    "style.innerHTML = '.old-browser, #old-browser, .browser-upgrade, .outdated-browser, .browser-alert, [class*=\\'update-browser\\'], [class*=\\'old-browser\\'], [id*=\\'update-browser\\'], [id*=\\'old-browser\\'], [class*=\\'unsupported\\'], [id*=\\'unsupported\\'], [class*=\\'warning\\'], [id*=\\'warning\\'] { display: none !important; visibility: hidden !important; height: 0 !important; opacity: 0 !important; pointer-events: none !important; }'; " +
     "document.head.appendChild(style); " +
     "var meta = document.createElement('meta'); " +
     "meta.name = 'viewport'; " +
@@ -304,17 +312,13 @@ private fun configureWebViewSettings(webView: WebView) {
         mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
       }
       cacheMode = WebSettings.LOAD_DEFAULT
-      setSupportZoom(false)
-      builtInZoomControls = false
+      setSupportZoom(true)
+      builtInZoomControls = true
       displayZoomControls = false
       textZoom = 100
       useWideViewPort = true
       loadWithOverviewMode = true
       userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 7 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-    }
-
-    setOnTouchListener { _, event ->
-      event.pointerCount > 1
     }
 
     CookieManager.getInstance().apply {
@@ -342,8 +346,12 @@ fun MainScreen(
 
   var fabPosition by remember { mutableStateOf(Offset(900f, 1800f)) }
   var showCredentialsSheet by remember { mutableStateOf(false) }
+  var showVoipSheet by remember { mutableStateOf(false) }
 
   val context = LocalContext.current
+  val voipManager = remember { VoipManager(context) }
+  val voipCallState by voipManager.callState.collectAsState()
+  val voipCallDuration by voipManager.callDuration.collectAsState()
 
   LaunchedEffect(context) {
     isOnlineState = isOnline(context)
@@ -816,6 +824,36 @@ fun MainScreen(
         }
       }
 
+      // VoIP Call FAB (Bottom-Left Side, completely Circular absolute, in place of deleted lock)
+      Box(
+        modifier = Modifier
+          .align(AbsoluteAlignment.BottomLeft)
+          .absolutePadding(bottom = 24.dp, left = 24.dp)
+          .size(56.dp)
+          .shadow(elevation = 6.dp, shape = CircleShape)
+          .background(
+            color = if (voipCallState != VoipCallState.IDLE && voipCallState != VoipCallState.DISCONNECTED) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.tertiaryContainer,
+            shape = CircleShape
+          )
+          .clip(CircleShape)
+          .clickable { showVoipSheet = true },
+        contentAlignment = Alignment.Center
+      ) {
+        Icon(
+          imageVector = Icons.Filled.Call,
+          contentDescription = "تماس اینترنتی VoIP",
+          tint = if (voipCallState != VoipCallState.IDLE && voipCallState != VoipCallState.DISCONNECTED) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onTertiaryContainer,
+          modifier = Modifier.size(24.dp)
+        )
+      }
+
+      if (showVoipSheet) {
+        VoipDialog(
+          voipManager = voipManager,
+          onDismiss = { showVoipSheet = false }
+        )
+      }
+
       if (showCredentialsSheet) {
         CredentialsDialog(
           onDismiss = { showCredentialsSheet = false },
@@ -1211,4 +1249,662 @@ class WebAppInterface(private val onShowCredentials: () -> Unit) {
     onShowCredentials()
   }
 }
+
+@Composable
+fun AudioWaveformVisualizer(isActive: Boolean) {
+  val infiniteTransition = androidx.compose.animation.core.rememberInfiniteTransition(label = "waveform")
+  val barCount = 15
+  val heights = remember { (0 until barCount).map { kotlin.random.Random.nextFloat() * 0.8f + 0.2f } }
+  val durations = remember { (0 until barCount).map { kotlin.random.Random.nextInt(250, 450) } }
+
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .height(60.dp)
+      .padding(vertical = 8.dp),
+    horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+    verticalAlignment = Alignment.CenterVertically
+  ) {
+    for (i in 0 until barCount) {
+      val targetVal = if (isActive) heights[i] else 0.1f
+      val duration = durations[i]
+      val animState = infiniteTransition.animateFloat(
+        initialValue = 0.1f,
+        targetValue = targetVal,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+          animation = androidx.compose.animation.core.tween(
+            durationMillis = duration,
+            easing = androidx.compose.animation.core.LinearEasing
+          ),
+          repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
+        ),
+        label = "bar_$i"
+      )
+      Box(
+        modifier = Modifier
+          .width(5.dp)
+          .fillMaxHeight(animState.value)
+          .background(
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(2.5.dp)
+          )
+      )
+    }
+  }
+}
+
+@Composable
+fun VoipIcon(
+  name: String,
+  contentDescription: String?,
+  modifier: Modifier = Modifier,
+  tint: Color = LocalContentColor.current
+) {
+  Canvas(modifier = modifier.size(24.dp)) {
+    when (name) {
+      "VolumeUp" -> {
+        val path = Path().apply {
+          moveTo(4f, 9f)
+          lineTo(8f, 9f)
+          lineTo(13f, 5f)
+          lineTo(13f, 19f)
+          lineTo(8f, 15f)
+          lineTo(4f, 15f)
+          close()
+        }
+        drawPath(path = path, color = tint)
+        drawArc(
+          color = tint,
+          startAngle = -45f,
+          sweepAngle = 90f,
+          useCenter = false,
+          style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
+          topLeft = androidx.compose.ui.geometry.Offset(15f, 8f),
+          size = androidx.compose.ui.geometry.Size(6f, 8f)
+        )
+        drawArc(
+          color = tint,
+          startAngle = -45f,
+          sweepAngle = 90f,
+          useCenter = false,
+          style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
+          topLeft = androidx.compose.ui.geometry.Offset(13f, 5f),
+          size = androidx.compose.ui.geometry.Size(12f, 14f)
+        )
+      }
+      "VolumeDown" -> {
+        val path = Path().apply {
+          moveTo(4f, 9f)
+          lineTo(8f, 9f)
+          lineTo(13f, 5f)
+          lineTo(13f, 19f)
+          lineTo(8f, 15f)
+          lineTo(4f, 15f)
+          close()
+        }
+        drawPath(path = path, color = tint)
+        drawArc(
+          color = tint,
+          startAngle = -45f,
+          sweepAngle = 90f,
+          useCenter = false,
+          style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
+          topLeft = androidx.compose.ui.geometry.Offset(15f, 8f),
+          size = androidx.compose.ui.geometry.Size(6f, 8f)
+        )
+      }
+      "Mic" -> {
+        drawRoundRect(
+          color = tint,
+          topLeft = androidx.compose.ui.geometry.Offset(9f, 4f),
+          size = androidx.compose.ui.geometry.Size(6f, 10f),
+          cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
+        )
+        drawArc(
+          color = tint,
+          startAngle = 0f,
+          sweepAngle = 180f,
+          useCenter = false,
+          style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
+          topLeft = androidx.compose.ui.geometry.Offset(6f, 8f),
+          size = androidx.compose.ui.geometry.Size(12f, 8f)
+        )
+        drawLine(
+          color = tint,
+          start = androidx.compose.ui.geometry.Offset(12f, 16f),
+          end = androidx.compose.ui.geometry.Offset(12f, 19f),
+          strokeWidth = 2f
+        )
+        drawLine(
+          color = tint,
+          start = androidx.compose.ui.geometry.Offset(8f, 19f),
+          end = androidx.compose.ui.geometry.Offset(16f, 19f),
+          strokeWidth = 2f
+        )
+      }
+      "MicOff" -> {
+        drawRoundRect(
+          color = tint.copy(alpha = 0.5f),
+          topLeft = androidx.compose.ui.geometry.Offset(9f, 4f),
+          size = androidx.compose.ui.geometry.Size(6f, 10f),
+          cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
+        )
+        drawArc(
+          color = tint,
+          startAngle = 0f,
+          sweepAngle = 180f,
+          useCenter = false,
+          style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
+          topLeft = androidx.compose.ui.geometry.Offset(6f, 8f),
+          size = androidx.compose.ui.geometry.Size(12f, 8f)
+        )
+        drawLine(
+          color = tint,
+          start = androidx.compose.ui.geometry.Offset(12f, 16f),
+          end = androidx.compose.ui.geometry.Offset(12f, 19f),
+          strokeWidth = 2f
+        )
+        drawLine(
+          color = tint,
+          start = androidx.compose.ui.geometry.Offset(8f, 19f),
+          end = androidx.compose.ui.geometry.Offset(16f, 19f),
+          strokeWidth = 2f
+        )
+        drawLine(
+          color = tint,
+          start = androidx.compose.ui.geometry.Offset(4f, 4f),
+          end = androidx.compose.ui.geometry.Offset(20f, 20f),
+          strokeWidth = 2f
+        )
+      }
+      "Dialpad" -> {
+        val dotRadius = 2f
+        val positions = listOf(6f, 12f, 18f)
+        for (x in positions) {
+          for (y in positions) {
+            drawCircle(
+              color = tint,
+              radius = dotRadius,
+              center = androidx.compose.ui.geometry.Offset(x, y)
+            )
+          }
+        }
+      }
+      else -> {
+        // Fallback dot
+        drawCircle(color = tint, radius = 4f, center = androidx.compose.ui.geometry.Offset(12f, 12f))
+      }
+    }
+  }
+}
+
+private fun formatVoipDuration(seconds: Int): String {
+  val m = seconds / 60
+  val s = seconds % 60
+  return String.format("%02d:%02d", m, s)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun VoipDialog(
+  voipManager: VoipManager,
+  onDismiss: () -> Unit
+) {
+  val context = LocalContext.current
+  val callState by voipManager.callState.collectAsState()
+  val activeCallNumber by voipManager.activeCallNumber.collectAsState()
+  val isMuted by voipManager.isMuted.collectAsState()
+  val isSpeakerOn by voipManager.isSpeakerOn.collectAsState()
+  val callDuration by voipManager.callDuration.collectAsState()
+  val inputGain by voipManager.inputGain.collectAsState()
+  val outputVolume by voipManager.outputVolume.collectAsState()
+  val registrationState by voipManager.registrationState.collectAsState()
+  val accountState by voipManager.accountState.collectAsState()
+
+  var selectedTab by remember { mutableStateOf(0) } // 0: Dialer, 1: SIP Config
+  var dialedNumber by remember { mutableStateOf("") }
+
+  // SIP Input States
+  var sipServer by remember { mutableStateOf(accountState.server) }
+  var sipUser by remember { mutableStateOf(accountState.username) }
+  var sipSecret by remember { mutableStateOf(accountState.secret) }
+  var sipPort by remember { mutableStateOf(accountState.port) }
+  var sipTransport by remember { mutableStateOf(accountState.transport) }
+
+  // Auto-register on open if not registered
+  LaunchedEffect(Unit) {
+    if (registrationState == "Unregistered" && accountState.server.isNotBlank()) {
+      voipManager.registerAccount()
+    }
+  }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    confirmButton = {},
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text("بستن و فعالیت در پس‌زمینه", style = MaterialTheme.typography.labelLarge)
+      }
+    },
+    title = {
+      Text(
+        text = "سیستم تماس اینترنتی (VoIP)",
+        style = MaterialTheme.typography.titleLarge,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.fillMaxWidth(),
+        textAlign = TextAlign.Center
+      )
+    },
+    text = {
+      Box(modifier = Modifier.width(340.dp).heightIn(max = 500.dp)) {
+        if (callState != VoipCallState.IDLE) {
+          // --- ACTIVE CALL SCREEN ---
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+          ) {
+            // Pulsing Avatar or Call Status Icon
+            Box(
+              modifier = Modifier
+                .size(90.dp)
+                .background(
+                  color = if (callState == VoipCallState.CONNECTED) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer,
+                  shape = CircleShape
+                ),
+              contentAlignment = Alignment.Center
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Person,
+                contentDescription = null,
+                tint = if (callState == VoipCallState.CONNECTED) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.size(48.dp)
+              )
+            }
+
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+              Text(
+                text = activeCallNumber,
+                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurface
+              )
+              Spacer(modifier = Modifier.height(4.dp))
+              Text(
+                text = when (callState) {
+                  VoipCallState.DIALING -> "در حال شماره‌گیری..."
+                  VoipCallState.RINGING -> "در حال زنگ خوردن (پاسخگو نیست)..."
+                  VoipCallState.CONNECTED -> "تماس برقرار شد • ${formatVoipDuration(callDuration)}"
+                  VoipCallState.DISCONNECTED -> "تماس پایان یافت"
+                  else -> ""
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (callState == VoipCallState.CONNECTED) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+
+            // Real-time Waveform Visualizer
+            AudioWaveformVisualizer(isActive = callState == VoipCallState.CONNECTED)
+
+            Divider(color = MaterialTheme.colorScheme.outlineVariant)
+
+            // VoIP Settings Controls (Input & Output Gain / Mute)
+            Column(
+              modifier = Modifier.fillMaxWidth(),
+              verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+              // Output Volume (Speaker/Earphone stream)
+              Column {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    VoipIcon(
+                      name = if (isSpeakerOn) "VolumeUp" else "VolumeDown",
+                      contentDescription = null,
+                      modifier = Modifier.size(20.dp),
+                      tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("صدای خروجی (بلندگو)", style = MaterialTheme.typography.bodyMedium)
+                  }
+                  Text("${(outputVolume * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+                }
+                Slider(
+                  value = outputVolume,
+                  onValueChange = { voipManager.setOutputVolume(it) },
+                  modifier = Modifier.fillMaxWidth()
+                )
+              }
+
+              // Input Gain (Microphone)
+              Column {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    VoipIcon(
+                      name = if (isMuted) "MicOff" else "Mic",
+                      contentDescription = null,
+                      modifier = Modifier.size(20.dp),
+                      tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("حساسیت میکروفون (ورودی)", style = MaterialTheme.typography.bodyMedium)
+                  }
+                  Text("${(inputGain * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+                }
+                Slider(
+                  value = inputGain,
+                  onValueChange = { voipManager.setInputGain(it) },
+                  modifier = Modifier.fillMaxWidth(),
+                  enabled = !isMuted
+                )
+              }
+            }
+
+            // Call Action Buttons (Mute, Speaker, Hangup)
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceEvenly,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              // Mute Button
+              IconButton(
+                onClick = { voipManager.toggleMute() },
+                modifier = Modifier
+                  .size(48.dp)
+                  .background(
+                    color = if (isMuted) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    shape = CircleShape
+                  )
+              ) {
+                VoipIcon(
+                  name = if (isMuted) "MicOff" else "Mic",
+                  contentDescription = "بی‌صدا",
+                  tint = if (isMuted) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                  modifier = Modifier.size(24.dp)
+                )
+              }
+
+              // Speakerphone Button
+              IconButton(
+                onClick = { voipManager.toggleSpeaker() },
+                modifier = Modifier
+                  .size(48.dp)
+                  .background(
+                    color = if (isSpeakerOn) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    shape = CircleShape
+                  )
+              ) {
+                VoipIcon(
+                  name = if (isSpeakerOn) "VolumeUp" else "VolumeDown",
+                  contentDescription = "اسپیکر",
+                  tint = if (isSpeakerOn) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                  modifier = Modifier.size(24.dp)
+                )
+              }
+
+              // Hangup Button
+              IconButton(
+                onClick = { voipManager.endCall() },
+                modifier = Modifier
+                  .size(56.dp)
+                  .background(color = MaterialTheme.colorScheme.error, shape = CircleShape)
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.Close,
+                  contentDescription = "قطع تماس",
+                  tint = Color.White
+                )
+              }
+            }
+          }
+        } else {
+          // --- IDLE / DIALPAD & CONFIG SCREEN ---
+          Column(modifier = Modifier.fillMaxWidth()) {
+            // Tabs
+            TabRow(selectedTabIndex = selectedTab) {
+              Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = { Text("شماره‌گیر", style = MaterialTheme.typography.labelLarge) },
+                icon = { VoipIcon(name = "Dialpad", contentDescription = null, modifier = Modifier.size(18.dp)) }
+              )
+              Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = { Text("تنظیمات SIP", style = MaterialTheme.typography.labelLarge) },
+                icon = { Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(18.dp)) }
+              )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            if (selectedTab == 0) {
+              // --- DIALPAD TAB ---
+              Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+              ) {
+                // Connection status banner
+                Card(
+                  colors = CardDefaults.cardColors(
+                    containerColor = when (registrationState) {
+                      "Registered" -> Color(0xFFE8F5E9)
+                      "Registering" -> Color(0xFFFFFDE7)
+                      else -> Color(0xFFECEFF1)
+                    }
+                  ),
+                  modifier = Modifier.fillMaxWidth()
+                ) {
+                  Row(
+                    modifier = Modifier.padding(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                  ) {
+                    Box(
+                      modifier = Modifier
+                        .size(8.dp)
+                        .background(
+                          color = when (registrationState) {
+                            "Registered" -> Color(0xFF4CAF50)
+                            "Registering" -> Color(0xFFFFEB3B)
+                            else -> Color(0xFF78909C)
+                          },
+                          shape = CircleShape
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                      text = when (registrationState) {
+                        "Registered" -> "متصل به سرور SIP (${accountState.username})"
+                        "Registering" -> "در حال اتصال به سرور SIP..."
+                        else -> "آفلاین - نیاز به تنظیمات SIP"
+                      },
+                      style = MaterialTheme.typography.bodySmall,
+                      color = when (registrationState) {
+                        "Registered" -> Color(0xFF2E7D32)
+                        "Registering" -> Color(0xFFF57F17)
+                        else -> Color(0xFF37474F)
+                      }
+                    )
+                  }
+                }
+
+                // Display number being typed
+                OutlinedTextField(
+                  value = dialedNumber,
+                  onValueChange = { dialedNumber = it },
+                  placeholder = { Text("شماره داخلی یا SIP URI") },
+                  modifier = Modifier.fillMaxWidth(),
+                  singleLine = true,
+                  textStyle = MaterialTheme.typography.headlineSmall.copy(textAlign = TextAlign.Center),
+                  trailingIcon = {
+                    if (dialedNumber.isNotEmpty()) {
+                      IconButton(onClick = { dialedNumber = dialedNumber.dropLast(1) }) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "حذف")
+                      }
+                    }
+                  }
+                )
+
+                // Grid of Numbers
+                val keys = listOf(
+                  listOf("1", "2", "3"),
+                  listOf("4", "5", "6"),
+                  listOf("7", "8", "9"),
+                  listOf("*", "0", "#")
+                )
+
+                Column(
+                  modifier = Modifier.fillMaxWidth(),
+                  verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                  keys.forEach { rowKeys ->
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                      rowKeys.forEach { key ->
+                        Button(
+                          onClick = {
+                            dialedNumber += key
+                            voipManager.playDtmf(key[0])
+                          },
+                          modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp),
+                          colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
+                        ) {
+                          Text(
+                            text = key,
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                          )
+                        }
+                      }
+                    }
+                  }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Call Button
+                Button(
+                  onClick = {
+                    if (dialedNumber.isBlank()) {
+                      Toast.makeText(context, "لطفا شماره یا آدرس SIP را وارد کنید", Toast.LENGTH_SHORT).show()
+                    } else {
+                      voipManager.startCall(dialedNumber)
+                    }
+                  },
+                  modifier = Modifier
+                    .size(64.dp)
+                    .background(color = Color(0xFF4CAF50), shape = CircleShape),
+                  colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF4CAF50),
+                    contentColor = Color.White
+                  ),
+                  shape = CircleShape,
+                  contentPadding = PaddingValues(0.dp)
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.Call,
+                    contentDescription = "برقراری تماس",
+                    modifier = Modifier.size(32.dp)
+                  )
+                }
+              }
+            } else {
+              // --- CONFIG SIP TAB ---
+              androidx.compose.foundation.lazy.LazyColumn(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .heightIn(max = 350.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+              ) {
+                item {
+                  OutlinedTextField(
+                    value = sipServer,
+                    onValueChange = { sipServer = it },
+                    label = { Text("سرور SIP / آدرس دامنه") },
+                    placeholder = { Text("sip.mydomain.com") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                  )
+                }
+                item {
+                  OutlinedTextField(
+                    value = sipUser,
+                    onValueChange = { sipUser = it },
+                    label = { Text("نام کاربری / داخلی") },
+                    placeholder = { Text("101") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                  )
+                }
+                item {
+                  OutlinedTextField(
+                    value = sipSecret,
+                    onValueChange = { sipSecret = it },
+                    label = { Text("رمز عبور SIP") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation()
+                  )
+                }
+                item {
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                  ) {
+                    OutlinedTextField(
+                      value = sipPort,
+                      onValueChange = { sipPort = it },
+                      label = { Text("پورت") },
+                      modifier = Modifier.weight(1f),
+                      singleLine = true
+                    )
+                    OutlinedTextField(
+                      value = sipTransport,
+                      onValueChange = { sipTransport = it },
+                      label = { Text("پروتکل") },
+                      modifier = Modifier.weight(1f),
+                      singleLine = true
+                    )
+                  }
+                }
+                item {
+                  Spacer(modifier = Modifier.height(8.dp))
+                  Button(
+                    onClick = {
+                      val acc = SipAccount(sipServer, sipUser, sipSecret, sipPort, sipTransport)
+                      voipManager.saveAccount(acc)
+                      voipManager.registerAccount()
+                      Toast.makeText(context, "اطلاعات حساب SIP ذخیره شد", Toast.LENGTH_SHORT).show()
+                      selectedTab = 0 // return to dialpad
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                  ) {
+                    Text("ذخیره و اتصال به سرور")
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  )
+}
+
 
