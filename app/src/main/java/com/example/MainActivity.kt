@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.content.Context
+import android.content.ClipboardManager
+import android.content.ClipData
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -14,6 +16,7 @@ import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.*
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -36,6 +39,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.AbsoluteAlignment
@@ -58,6 +64,8 @@ import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.geometry.Size
@@ -75,8 +83,19 @@ private const val JS_BYPASS_WARNINGS = "javascript:(function() { " +
     "document.head.appendChild(style); " +
     "var meta = document.createElement('meta'); " +
     "meta.name = 'viewport'; " +
-    "meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no'; " +
+    "meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, shrink-to-fit=no'; " +
     "document.head.appendChild(meta); " +
+    "document.addEventListener('gesturestart', function(e) { e.preventDefault(); }, { passive: false }); " +
+    "document.addEventListener('gesturechange', function(e) { e.preventDefault(); }, { passive: false }); " +
+    "document.addEventListener('touchmove', function(e) { if (e.scale !== 1) { e.preventDefault(); } }, { passive: false }); " +
+    "var lastTouchEnd = 0; " +
+    "document.addEventListener('touchend', function(e) { " +
+    "  var now = (new Date()).getTime(); " +
+    "  if (now - lastTouchEnd <= 300) { " +
+    "    e.preventDefault(); " +
+    "  } " +
+    "  lastTouchEnd = now; " +
+    "}, false); " +
     "var checkAndRemove = function() { " +
     "  var rx = /\\u0642\\u062f\\u06cc\\u0645\\u06cc|\\u0628\\u0631\\u0648\\u0632\\u0631\\u0633\\u0627\\u0646\\u06cc|\\u0622\\u067e\\u062f\\u06cc\\u062a|\\u0646\\u0633\\u062e\\u0647|browser|update|support|old|outdated/i; " +
     "  var elems = document.querySelectorAll('div, section, dialog, p, span, h1, h2, h3'); " +
@@ -212,21 +231,26 @@ class CircularRevealShape(
     if (progress <= 0f) {
       return Outline.Generic(Path())
     }
-    if (progress >= 1f) {
+    if (progress >= 0.96f) {
       return Outline.Rectangle(Rect(0f, 0f, size.width, size.height))
     }
+    val center = if (centerOffset == Offset.Unspecified || centerOffset == Offset.Zero) {
+      Offset(size.width * 0.85f, size.height * 0.85f)
+    } else {
+      centerOffset
+    }
     val maxRadius = kotlin.math.hypot(
-      kotlin.math.max(centerOffset.x, size.width - centerOffset.x),
-      kotlin.math.max(centerOffset.y, size.height - centerOffset.y)
+      kotlin.math.max(center.x, size.width - center.x),
+      kotlin.math.max(center.y, size.height - center.y)
     )
     val radius = maxRadius * progress
     val path = Path().apply {
       addOval(
         Rect(
-          left = centerOffset.x - radius,
-          top = centerOffset.y - radius,
-          right = centerOffset.x + radius,
-          bottom = centerOffset.y + radius
+          left = center.x - radius,
+          top = center.y - radius,
+          right = center.x + radius,
+          bottom = center.y + radius
         )
       )
     }
@@ -273,6 +297,7 @@ private fun configureWebViewSettings(webView: WebView) {
       setSupportZoom(false)
       builtInZoomControls = false
       displayZoomControls = false
+      textZoom = 100
       useWideViewPort = true
       loadWithOverviewMode = true
       userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 7 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
@@ -306,6 +331,7 @@ fun MainScreen(
   var hasWebLoadError by remember { mutableStateOf(false) }
 
   var fabPosition by remember { mutableStateOf(Offset(900f, 1800f)) }
+  var showCredentialsSheet by remember { mutableStateOf(false) }
 
   val context = LocalContext.current
 
@@ -696,8 +722,11 @@ fun MainScreen(
             .fillMaxSize()
             .graphicsLayer {
               alpha = if (bubbleProgress > 0f) 1f else 0f
+              clip = bubbleProgress < 0.98f
+              if (clip) {
+                shape = CircularRevealShape(bubbleProgress, fabPosition)
+              }
             }
-            .clip(CircularRevealShape(bubbleProgress, fabPosition))
             .background(Color(0xFF6750A4))
             .then(inputModifier)
         ) {
@@ -718,6 +747,29 @@ fun MainScreen(
             )
           }
         }
+      }
+
+      // Credential Manager FAB (Bottom-Left Side, completely Circular absolute)
+      Box(
+        modifier = Modifier
+          .align(AbsoluteAlignment.BottomLeft)
+          .absolutePadding(bottom = 24.dp, left = 24.dp)
+          .size(56.dp)
+          .shadow(elevation = 6.dp, shape = CircleShape)
+          .background(
+            color = MaterialTheme.colorScheme.tertiaryContainer,
+            shape = CircleShape
+          )
+          .clip(CircleShape)
+          .clickable { showCredentialsSheet = true },
+        contentAlignment = Alignment.Center
+      ) {
+        Icon(
+          imageVector = Icons.Filled.Lock,
+          contentDescription = "مدیریت رمزها",
+          tint = MaterialTheme.colorScheme.onTertiaryContainer,
+          modifier = Modifier.size(24.dp)
+        )
       }
 
       // Floating Action Button Overlay (Completely Circular, bottom-right side absolute)
@@ -763,6 +815,54 @@ fun MainScreen(
             )
           }
         }
+      }
+
+      if (showCredentialsSheet) {
+        CredentialsDialog(
+          onDismiss = { showCredentialsSheet = false },
+          onInject = { cred ->
+            val activeWebView = if (chatExpanded) chatWebViewRef else mainWebViewRef
+            activeWebView?.let { webView ->
+              val js = String.format(
+                "javascript:(function() { " +
+                "var inputs = document.querySelectorAll('input'); " +
+                "var userField = null; " +
+                "var passField = null; " +
+                "for (var i = 0; i < inputs.length; i++) { " +
+                "  var type = inputs[i].getAttribute('type') || ''; " +
+                "  var name = inputs[i].getAttribute('name') || ''; " +
+                "  var id = inputs[i].getAttribute('id') || ''; " +
+                "  var placeholder = inputs[i].getAttribute('placeholder') || ''; " +
+                "  if (type === 'password') { " +
+                "    passField = inputs[i]; " +
+                "  } else if (type === 'email' || type === 'text' || name.indexOf('user') !== -1 || name.indexOf('email') !== -1 || id.indexOf('user') !== -1 || id.indexOf('email') !== -1 || placeholder.indexOf('نام کاربری') !== -1 || placeholder.indexOf('ایمیل') !== -1 || placeholder.indexOf('تلفن') !== -1) { " +
+                "    if (!userField && type !== 'submit' && type !== 'button') { " +
+                "      userField = inputs[i]; " +
+                "    } " +
+                "  } " +
+                "} " +
+                "if (userField) { " +
+                "  userField.value = '%s'; " +
+                "  userField.dispatchEvent(new Event('input', { bubbles: true })); " +
+                "  userField.dispatchEvent(new Event('change', { bubbles: true })); " +
+                "} " +
+                "if (passField) { " +
+                "  passField.value = '%s'; " +
+                "  passField.dispatchEvent(new Event('input', { bubbles: true })); " +
+                "  passField.dispatchEvent(new Event('change', { bubbles: true })); " +
+                "} " +
+                "})()",
+                cred.username.replace("'", "\\'").replace("\"", "\\\""),
+                cred.password.replace("'", "\\'").replace("\"", "\\\"")
+              )
+              webView.loadUrl(js)
+              showCredentialsSheet = false
+              Toast.makeText(context, "اطلاعات با موفقیت درج شد", Toast.LENGTH_SHORT).show()
+            } ?: run {
+              Toast.makeText(context, "خطا: صفحه فعال یافت نشد", Toast.LENGTH_SHORT).show()
+            }
+          }
+        )
       }
     }
   }
@@ -861,4 +961,247 @@ fun ChatLogoIcon(modifier: Modifier = Modifier, color: androidx.compose.ui.graph
     }
     drawPath(path = path, color = color)
   }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CredentialsDialog(
+  onDismiss: () -> Unit,
+  onInject: (SavedCredential) -> Unit
+) {
+  val context = LocalContext.current
+  val store = remember { CredentialStore(context) }
+  var credentialsList by remember { mutableStateOf(store.getCredentials()) }
+  
+  var isAddingNew by remember { mutableStateOf(false) }
+  var titleInput by remember { mutableStateOf("") }
+  var usernameInput by remember { mutableStateOf("") }
+  var passwordInput by remember { mutableStateOf("") }
+  var passwordVisible by remember { mutableStateOf(false) }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    confirmButton = {},
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text("بستن", style = MaterialTheme.typography.labelLarge)
+      }
+    },
+    title = {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Text(
+          text = if (isAddingNew) "افزودن رمز عبور جدید" else "مدیریت رمزهای ورود",
+          style = MaterialTheme.typography.titleLarge,
+          color = MaterialTheme.colorScheme.primary
+        )
+        if (!isAddingNew) {
+          IconButton(onClick = { isAddingNew = true }) {
+            Icon(Icons.Filled.Add, contentDescription = "افزودن")
+          }
+        } else {
+          IconButton(onClick = { isAddingNew = false }) {
+            Icon(Icons.Filled.Close, contentDescription = "بازگشت")
+          }
+        }
+      }
+    },
+    text = {
+      Box(modifier = Modifier.width(320.dp).heightIn(max = 450.dp)) {
+        if (isAddingNew) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+          ) {
+            OutlinedTextField(
+              value = titleInput,
+              onValueChange = { titleInput = it },
+              label = { Text("عنوان (مثلاً: پنل کاربری)") },
+              modifier = Modifier.fillMaxWidth(),
+              singleLine = true
+            )
+            OutlinedTextField(
+              value = usernameInput,
+              onValueChange = { usernameInput = it },
+              label = { Text("نام کاربری / ایمیل / تلفن") },
+              modifier = Modifier.fillMaxWidth(),
+              singleLine = true
+            )
+            OutlinedTextField(
+              value = passwordInput,
+              onValueChange = { passwordInput = it },
+              label = { Text("رمز عبور") },
+              modifier = Modifier.fillMaxWidth(),
+              singleLine = true,
+              visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+              trailingIcon = {
+                TextButton(onClick = { passwordVisible = !passwordVisible }) {
+                  Text(if (passwordVisible) "پنهان" else "نمایش")
+                }
+              }
+            )
+            
+            Button(
+              onClick = {
+                if (titleInput.isBlank() || usernameInput.isBlank() || passwordInput.isBlank()) {
+                  Toast.makeText(context, "لطفاً تمامی فیلدها را پر کنید", Toast.LENGTH_SHORT).show()
+                } else {
+                  val newCred = SavedCredential(
+                    title = titleInput,
+                    username = usernameInput,
+                    password = passwordInput,
+                    siteType = "other"
+                  )
+                  store.addCredential(newCred)
+                  credentialsList = store.getCredentials()
+                  // Reset
+                  titleInput = ""
+                  usernameInput = ""
+                  passwordInput = ""
+                  isAddingNew = false
+                  Toast.makeText(context, "رمز عبور با موفقیت ذخیره شد", Toast.LENGTH_SHORT).show()
+                }
+              },
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Text("ذخیره رمز عبور")
+            }
+          }
+        } else {
+          if (credentialsList.isEmpty()) {
+            Column(
+              modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.Center
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Lock,
+                contentDescription = null,
+                modifier = Modifier.size(64.dp),
+                tint = MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f)
+              )
+              Spacer(modifier = Modifier.height(16.dp))
+              Text(
+                text = "هیچ رمز عبوری ذخیره نشده است.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+              )
+              Spacer(modifier = Modifier.height(8.dp))
+              TextButton(onClick = { isAddingNew = true }) {
+                Text("افزودن اولین رمز عبور")
+              }
+            }
+          } else {
+            androidx.compose.foundation.lazy.LazyColumn(
+              modifier = Modifier.fillMaxWidth(),
+              verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              items(credentialsList.size) { index ->
+                val cred = credentialsList[index]
+                Card(
+                  modifier = Modifier.fillMaxWidth(),
+                  colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                  )
+                ) {
+                  Column(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(12.dp)
+                  ) {
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      horizontalArrangement = Arrangement.SpaceBetween,
+                      verticalAlignment = Alignment.CenterVertically
+                    ) {
+                      Text(
+                        text = cred.title,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                          fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        ),
+                        color = MaterialTheme.colorScheme.primary
+                      )
+                      IconButton(
+                        onClick = {
+                          store.deleteCredential(cred.id)
+                          credentialsList = store.getCredentials()
+                          Toast.makeText(context, "رمز عبور حذف شد", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.size(32.dp)
+                      ) {
+                        Icon(
+                          imageVector = Icons.Filled.Delete,
+                          contentDescription = "حذف",
+                          tint = MaterialTheme.colorScheme.error,
+                          modifier = Modifier.size(18.dp)
+                        )
+                      }
+                    }
+                    
+                    Spacer(modifier = Modifier.height(4.dp))
+                    
+                    Text(
+                      text = "نام کاربری: ${cred.username}",
+                      style = MaterialTheme.typography.bodyMedium,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                      Button(
+                        onClick = { onInject(cred) },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        colors = ButtonDefaults.buttonColors(
+                          containerColor = MaterialTheme.colorScheme.primary
+                        )
+                      ) {
+                        Text("درج در سایت", style = MaterialTheme.typography.bodySmall)
+                      }
+                      
+                      OutlinedButton(
+                        onClick = {
+                          val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                          val clip = ClipData.newPlainText("username", cred.username)
+                          clipboard.setPrimaryClip(clip)
+                          Toast.makeText(context, "نام کاربری کپی شد", Toast.LENGTH_SHORT).show()
+                        },
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp)
+                      ) {
+                        Text("کپی نام", style = MaterialTheme.typography.bodySmall)
+                      }
+
+                      OutlinedButton(
+                        onClick = {
+                          val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                          val clip = ClipData.newPlainText("password", cred.password)
+                          clipboard.setPrimaryClip(clip)
+                          Toast.makeText(context, "رمز عبور کپی شد", Toast.LENGTH_SHORT).show()
+                        },
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp)
+                      ) {
+                        Text("کپی رمز", style = MaterialTheme.typography.bodySmall)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  )
 }
