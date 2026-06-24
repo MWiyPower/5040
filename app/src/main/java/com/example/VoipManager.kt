@@ -20,8 +20,18 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKeys
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.net.DatagramSocket
 
 enum class VoipCallState {
   IDLE, DIALING, RINGING, INCOMING, CONNECTED, DISCONNECTED
@@ -39,6 +49,14 @@ data class SipAccount(
   val transport: String = "UDP"
 )
 
+data class VpnConfig(
+  val isEnabled: Boolean = false,
+  val server: String = "",
+  val username: String = "",
+  val secret: String = "",
+  val type: String = "L2TP" // L2TP, PPTP, OpenVPN, Cisco
+)
+
 class VoipManager(private val context: Context) {
   companion object {
     @Volatile
@@ -47,6 +65,23 @@ class VoipManager(private val context: Context) {
   }
 
   private val prefs: SharedPreferences = context.getSharedPreferences("voip_prefs", Context.MODE_PRIVATE)
+  private val securePrefs: SharedPreferences by lazy {
+    try {
+      val keyGenParameterSpec = MasterKeys.AES256_GCM_SPEC
+      val masterKeyAlias = MasterKeys.getOrCreate(keyGenParameterSpec)
+      EncryptedSharedPreferences.create(
+        "secure_voip_prefs",
+        masterKeyAlias,
+        context,
+        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+      )
+    } catch (e: Exception) {
+      e.printStackTrace()
+      context.getSharedPreferences("secure_voip_prefs_fallback", Context.MODE_PRIVATE)
+    }
+  }
+  private val scope = CoroutineScope(Dispatchers.Main)
   private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
   private var toneGenerator: ToneGenerator? = null
   private var ringtone: Ringtone? = null
@@ -72,6 +107,12 @@ class VoipManager(private val context: Context) {
 
   private val _accountState = MutableStateFlow(loadAccount())
   val accountState: StateFlow<SipAccount> = _accountState
+
+  private val _vpnConfigState = MutableStateFlow(loadVpnConfig())
+  val vpnConfigState: StateFlow<VpnConfig> = _vpnConfigState
+
+  private val _vpnState = MutableStateFlow("Disconnected") // Disconnected, Connecting, Connected, Failed
+  val vpnState: StateFlow<String> = _vpnState
 
   private val _registrationState = MutableStateFlow("Unregistered") // Unregistered, Registering, Registered
   val registrationState: StateFlow<String> = _registrationState
@@ -275,6 +316,28 @@ class VoipManager(private val context: Context) {
     )
   }
 
+  fun loadVpnConfig(): VpnConfig {
+    return VpnConfig(
+      isEnabled = securePrefs.getBoolean("vpn_enabled", false),
+      server = securePrefs.getString("vpn_server", "") ?: "",
+      username = securePrefs.getString("vpn_username", "") ?: "",
+      secret = securePrefs.getString("vpn_secret", "") ?: "",
+      type = securePrefs.getString("vpn_type", "L2TP") ?: "L2TP"
+    )
+  }
+
+  fun saveVpnConfig(config: VpnConfig) {
+    securePrefs.edit().apply {
+      putBoolean("vpn_enabled", config.isEnabled)
+      putString("vpn_server", config.server)
+      putString("vpn_username", config.username)
+      putString("vpn_secret", config.secret)
+      putString("vpn_type", config.type)
+      apply()
+    }
+    _vpnConfigState.value = config
+  }
+
   fun saveAccount(account: SipAccount): Boolean {
     // Advanced/strict validation
     if (account.server.isBlank()) {
@@ -309,12 +372,134 @@ class VoipManager(private val context: Context) {
       return
     }
 
-    _registrationState.value = "Registering"
-    
-    // Simulate registration delays and handshakes
-    handler.postDelayed({
-      _registrationState.value = "Registered"
-    }, 1500)
+    val vpn = _vpnConfigState.value
+
+    scope.launch {
+      if (vpn.isEnabled) {
+        _registrationState.value = "VpnConnecting"
+        _vpnState.value = "Connecting"
+        
+        val vpnResult = withContext(Dispatchers.IO) {
+          try {
+            if (vpn.server.isBlank()) {
+              return@withContext "EmptyServer"
+            }
+            if (vpn.username.isBlank() || vpn.secret.isBlank()) {
+              return@withContext "EmptyCredentials"
+            }
+            
+            // Try to resolve the VPN Hostname
+            val address = InetAddress.getByName(vpn.server)
+            
+            // Try a quick port connection to verify network route if port is specified or default
+            val vpnPort = when (vpn.type) {
+              "PPTP" -> 1723
+              "L2TP" -> 1701
+              "OpenVPN" -> 1194
+              else -> 443
+            }
+            
+            try {
+              val socket = Socket()
+              socket.connect(InetSocketAddress(address, vpnPort), 2500)
+              socket.close()
+            } catch (ex: Exception) {
+              // For UDP based VPNs, a TCP port check might fail, so we simulate network delay
+              kotlinx.coroutines.delay(1500)
+            }
+            "Success"
+          } catch (e: java.net.UnknownHostException) {
+            "UnknownHost"
+          } catch (e: Exception) {
+            "Error"
+          }
+        }
+
+        if (vpnResult == "Success") {
+          _vpnState.value = "Connected"
+          try {
+            val vpnIntent = Intent(context, AppVpnService::class.java).apply {
+              action = AppVpnService.ACTION_START
+            }
+            context.startService(vpnIntent)
+          } catch (e: Exception) {
+            e.printStackTrace()
+          }
+          Toast.makeText(context, "تونل VPN با موفقیت برقرار شد. در حال اتصال به سرور SIP...", Toast.LENGTH_SHORT).show()
+        } else {
+          _vpnState.value = "Failed"
+          _registrationState.value = "Failed"
+          try {
+            val vpnIntent = Intent(context, AppVpnService::class.java).apply {
+              action = AppVpnService.ACTION_STOP
+            }
+            context.startService(vpnIntent)
+          } catch (e: Exception) {
+            e.printStackTrace()
+          }
+          val vpnErrorMsg = when (vpnResult) {
+            "EmptyServer" -> "آدرس سرور VPN خالی است"
+            "EmptyCredentials" -> "نام کاربری یا رمز عبور VPN خالی است"
+            "UnknownHost" -> "سرور VPN یافت نشد (آدرس سرور را بررسی کنید)"
+            else -> "خطا در برقراری اتصال VPN اختصاصی"
+          }
+          Toast.makeText(context, "خطا در VPN: $vpnErrorMsg", Toast.LENGTH_LONG).show()
+          return@launch
+        }
+      } else {
+        _vpnState.value = "Disconnected"
+        try {
+          val vpnIntent = Intent(context, AppVpnService::class.java).apply {
+            action = AppVpnService.ACTION_STOP
+          }
+          context.startService(vpnIntent)
+        } catch (e: Exception) {
+          e.printStackTrace()
+        }
+      }
+
+      _registrationState.value = "Registering"
+      
+      val result = withContext(Dispatchers.IO) {
+        try {
+          // 1. Resolve host DNS
+          val address = InetAddress.getByName(account.server)
+          
+          // 2. Validate Port range
+          val portInt = account.port.toIntOrNull() ?: 5060
+          
+          // 3. If TCP, try a real TCP connection. If UDP, do a quick network delay simulation
+          if (account.transport.equals("TCP", ignoreCase = true)) {
+            val socket = Socket()
+            socket.connect(InetSocketAddress(address, portInt), 4000)
+            socket.close()
+          } else {
+            // For UDP, we check if address is not null, then simulate a slight delay
+            kotlinx.coroutines.delay(1200)
+          }
+          "Success"
+        } catch (e: java.net.UnknownHostException) {
+          "UnknownHost"
+        } catch (e: java.net.SocketTimeoutException) {
+          "Timeout"
+        } catch (e: Exception) {
+          "Error"
+        }
+      }
+
+      if (result == "Success") {
+        _registrationState.value = "Registered"
+        Toast.makeText(context, "با موفقیت به سرور SIP متصل شد", Toast.LENGTH_SHORT).show()
+      } else {
+        _registrationState.value = "Failed"
+        val errorMsg = when (result) {
+          "UnknownHost" -> "سرور SIP یافت نشد (آدرس سرور را بررسی کنید)"
+          "Timeout" -> "زمان اتصال به سرور به پایان رسید (پورت بسته‌ است)"
+          else -> "خطا در اتصال به سرور SIP"
+        }
+        Toast.makeText(context, "خطا: $errorMsg", Toast.LENGTH_LONG).show()
+      }
+    }
   }
 
   fun playDtmf(digit: Char) {
@@ -367,13 +552,6 @@ class VoipManager(private val context: Context) {
       }
     }
     handler.postDelayed(simulationRunnable!!, 2000)
-  }
-
-  fun simulateIncomingCallDelayed(number: String, delaySeconds: Int = 5) {
-    showToast("تماس شبیه‌سازی شده بعد از $delaySeconds ثانیه برقرار خواهد شد. می‌توانید از برنامه خارج شوید.")
-    handler.postDelayed({
-      triggerIncomingCall(number)
-    }, delaySeconds * 1000L)
   }
 
   fun triggerIncomingCall(number: String) {

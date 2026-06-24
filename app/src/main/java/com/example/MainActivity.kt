@@ -930,11 +930,11 @@ fun MainScreen(
         )
       }
 
-      // Top-Right Floating Menu Button (smaller than bottom ones, opens the right drawer)
+      // Top-Left Floating Menu Button (smaller than bottom ones, opens the right drawer)
       Box(
         modifier = Modifier
-          .align(AbsoluteAlignment.TopRight)
-          .absolutePadding(top = 40.dp, right = 16.dp)
+          .align(AbsoluteAlignment.TopLeft)
+          .absolutePadding(top = 40.dp, left = 16.dp)
           .size(44.dp)
           .shadow(elevation = 6.dp, shape = CircleShape)
           .background(MaterialTheme.colorScheme.primaryContainer, shape = CircleShape)
@@ -986,8 +986,7 @@ fun MainScreen(
               .padding(16.dp)
           ) {
             Column(
-              modifier = Modifier.fillMaxSize(),
-              verticalArrangement = Arrangement.SpaceBetween
+              modifier = Modifier.fillMaxSize()
             ) {
               Column {
                 Row(
@@ -1103,13 +1102,6 @@ fun MainScreen(
                     color = MaterialTheme.colorScheme.onSurface
                   )
                 }
-              }
-
-              Button(
-                onClick = { isDrawerOpen = false },
-                modifier = Modifier.fillMaxWidth()
-              ) {
-                Text("بستن منو")
               }
             }
           }
@@ -2298,6 +2290,8 @@ fun VoipDialog(
                 containerColor = when (registrationState) {
                   "Registered" -> Color(0xFFE8F5E9)
                   "Registering" -> Color(0xFFFFFDE7)
+                  "VpnConnecting" -> Color(0xFFEDE7F6)
+                  "Failed" -> Color(0xFFFFEBEE)
                   else -> Color(0xFFECEFF1)
                 }
               ),
@@ -2315,6 +2309,8 @@ fun VoipDialog(
                       color = when (registrationState) {
                         "Registered" -> Color(0xFF4CAF50)
                         "Registering" -> Color(0xFFFFEB3B)
+                        "VpnConnecting" -> Color(0xFF9C27B0)
+                        "Failed" -> Color(0xFFE53935)
                         else -> Color(0xFF78909C)
                       },
                       shape = CircleShape
@@ -2325,12 +2321,16 @@ fun VoipDialog(
                   text = when (registrationState) {
                     "Registered" -> "متصل به سرور SIP (${accountState.username})"
                     "Registering" -> "در حال اتصال به سرور SIP..."
+                    "VpnConnecting" -> "در حال برقراری اتصال به VPN اختصاصی..."
+                    "Failed" -> "خطا در اتصال به سرور (تنظیمات SIP یا VPN را بررسی کنید)"
                     else -> "آفلاین - نیاز به تنظیمات SIP"
                   },
                   style = MaterialTheme.typography.bodySmall,
                   color = when (registrationState) {
                     "Registered" -> Color(0xFF2E7D32)
                     "Registering" -> Color(0xFFF57F17)
+                    "VpnConnecting" -> Color(0xFF6A1B9A)
+                    "Failed" -> Color(0xFFC62828)
                     else -> Color(0xFF37474F)
                   }
                 )
@@ -2448,12 +2448,19 @@ fun SettingsDialog(
   val context = LocalContext.current
   val accountState by voipManager.accountState.collectAsState()
   val registrationState by voipManager.registrationState.collectAsState()
+  val vpnConfigState by voipManager.vpnConfigState.collectAsState()
 
   var sipServer by remember { mutableStateOf(accountState.server) }
   var sipUser by remember { mutableStateOf(accountState.username) }
   var sipSecret by remember { mutableStateOf(accountState.secret) }
   var sipPort by remember { mutableStateOf(accountState.port) }
   var sipTransport by remember { mutableStateOf(accountState.transport) }
+
+  var vpnEnabled by remember { mutableStateOf(vpnConfigState.isEnabled) }
+  var vpnServer by remember { mutableStateOf(vpnConfigState.server) }
+  var vpnUser by remember { mutableStateOf(vpnConfigState.username) }
+  var vpnSecret by remember { mutableStateOf(vpnConfigState.secret) }
+  var vpnType by remember { mutableStateOf(vpnConfigState.type) }
 
   AlertDialog(
     onDismissRequest = onDismiss,
@@ -2537,10 +2544,100 @@ fun SettingsDialog(
             )
           }
         }
+
+        item {
+          Divider(modifier = Modifier.padding(vertical = 4.dp))
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "اتصال به VPN اختصاصی",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
+              )
+              Text(
+                text = "برای تماس‌های خارج از شبکه یا محافظت‌شده",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+            Switch(
+              checked = vpnEnabled,
+              onCheckedChange = { vpnEnabled = it }
+            )
+          }
+        }
+
+        if (vpnEnabled) {
+          item {
+            OutlinedTextField(
+              value = vpnServer,
+              onValueChange = { vpnServer = it },
+              label = { Text("آدرس سرور VPN") },
+              placeholder = { Text("192.168.1.100") },
+              modifier = Modifier.fillMaxWidth(),
+              singleLine = true
+            )
+          }
+          item {
+            OutlinedTextField(
+              value = vpnUser,
+              onValueChange = { vpnUser = it },
+              label = { Text("نام کاربری VPN") },
+              placeholder = { Text("vpn_user") },
+              modifier = Modifier.fillMaxWidth(),
+              singleLine = true
+            )
+          }
+          item {
+            OutlinedTextField(
+              value = vpnSecret,
+              onValueChange = { vpnSecret = it },
+              label = { Text("رمز عبور VPN") },
+              modifier = Modifier.fillMaxWidth(),
+              singleLine = true,
+              visualTransformation = PasswordVisualTransformation()
+            )
+          }
+          item {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+              Text(
+                text = "نوع پروتکل VPN",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+              ) {
+                listOf("L2TP", "PPTP", "OpenVPN", "Cisco").forEach { type ->
+                  val isSelected = vpnType == type
+                  Button(
+                    onClick = { vpnType = type },
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                    colors = ButtonDefaults.buttonColors(
+                      containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                      contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                  ) {
+                    Text(type, style = MaterialTheme.typography.labelSmall)
+                  }
+                }
+              }
+            }
+          }
+        }
+
         item {
           Button(
             onClick = {
               val acc = SipAccount(sipServer, sipUser, sipSecret, sipPort, sipTransport)
+              val vpnConf = VpnConfig(vpnEnabled, vpnServer, vpnUser, vpnSecret, vpnType)
+              voipManager.saveVpnConfig(vpnConf)
               if (voipManager.saveAccount(acc)) {
                 voipManager.registerAccount()
                 Toast.makeText(context, "تنظیمات ذخیره شد و در حال اتصال است...", Toast.LENGTH_SHORT).show()
@@ -2551,45 +2648,6 @@ fun SettingsDialog(
             modifier = Modifier.fillMaxWidth()
           ) {
             Text("ذخیره و اتصال به سرور")
-          }
-        }
-
-        item {
-          Divider(modifier = Modifier.padding(vertical = 8.dp))
-          Text(
-            text = "شبیه‌ساز تماس‌های دریافتی",
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.secondary
-          )
-        }
-        item {
-          Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-              onClick = {
-                voipManager.triggerIncomingCall("+989123456789")
-                onDismiss()
-              },
-              modifier = Modifier.fillMaxWidth(),
-              colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-              )
-            ) {
-              Text("شبیه‌سازی تماس ورودی (فوری)")
-            }
-            Button(
-              onClick = {
-                voipManager.simulateIncomingCallDelayed("+982188888888", 5)
-                onDismiss()
-              },
-              modifier = Modifier.fillMaxWidth(),
-              colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                contentColor = MaterialTheme.colorScheme.onTertiaryContainer
-              )
-            ) {
-              Text("شبیه‌سازی تماس ورودی (با ۵ ثانیه تاخیر)")
-            }
           }
         }
       }
