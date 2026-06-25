@@ -560,6 +560,8 @@ class VoipManager(private val context: Context) {
   }
 
   fun registerAccount() {
+    _registrationState.value = "Unregistered"
+    return
     val account = _accountState.value
     if (account.server.isBlank() || account.username.isBlank() || account.secret.isBlank()) {
       _registrationState.value = "Unregistered"
@@ -742,43 +744,12 @@ class VoipManager(private val context: Context) {
   }
 
   fun startCall(number: String) {
-    if (_registrationState.value != "Registered") {
-      showToast("خطا: برای برقراری تماس ابتدا باید به سرور SIP متصل شوید")
-      return
-    }
-    if (number.isBlank()) return
-    currentCallType = "OUTGOING"
-    _activeCallNumber.value = number
-    setCallState(VoipCallState.DIALING)
-    _callDuration.value = 0
-
-    // Play Ringback Tone
-    playRingbackTone()
-
-    // Establish call connection (after 2s handshake/dialing)
-    simulationRunnable = object : Runnable {
-      override fun run() {
-        if (_callState.value == VoipCallState.DIALING) {
-          stopTones()
-          setCallState(VoipCallState.CONNECTED)
-          startDurationCounter()
-        }
-      }
-    }
-    handler.postDelayed(simulationRunnable!!, 2000)
+    showToast("امکانات تماس موقتاً غیرفعال شده است")
+    return
   }
 
   fun triggerIncomingCall(number: String) {
-    currentCallType = "INCOMING"
-    _activeCallNumber.value = number
-    setCallState(VoipCallState.INCOMING)
-    _callDuration.value = 0
-
-    // Always play ringtone and show incoming call UI, never auto-answer
-    playIncomingRingtone()
-    if (!isAppInForeground) {
-      showIncomingCallNotification(number)
-    }
+    return
   }
 
   fun acceptIncomingCall() {

@@ -145,6 +145,50 @@ private const val JS_BYPASS_WARNINGS = "javascript:(function() { " +
     "setInterval(addInputListeners, 1000); " +
     "})()"
 
+private const val JS_NOTIFICATION_AND_THEME = "javascript:(function() { " +
+    "try { " +
+    "  if (!window.Notification) { " +
+    "    window.Notification = function(title, options) { " +
+    "      if (window.AndroidApp && window.AndroidApp.onNewMessage) { window.AndroidApp.onNewMessage(); } " +
+    "    }; " +
+    "    window.Notification.permission = 'granted'; " +
+    "    window.Notification.requestPermission = function(cb) { if (cb) cb('granted'); return Promise.resolve('granted'); }; " +
+    "  } else { " +
+    "    var OrgNotification = window.Notification; " +
+    "    window.Notification = function(title, options) { " +
+    "      if (window.AndroidApp && window.AndroidApp.onNewMessage) { window.AndroidApp.onNewMessage(); } " +
+    "      try { return new OrgNotification(title, options); } catch(e) { return {}; } " +
+    "    }; " +
+    "    Object.assign(window.Notification, OrgNotification); " +
+    "  } " +
+    "  if (navigator.serviceWorker) { " +
+    "    navigator.serviceWorker.ready.then(function(reg) { " +
+    "      var orgShow = reg.showNotification; " +
+    "      reg.showNotification = function(title, options) { " +
+    "        if (window.AndroidApp && window.AndroidApp.onNewMessage) { window.AndroidApp.onNewMessage(); } " +
+    "        if (orgShow) { return orgShow.apply(reg, arguments); } " +
+    "        return Promise.resolve(); " +
+    "      }; " +
+    "    }).catch(function(e){}); " +
+    "  } " +
+    "  var target = document.querySelector('title') || document.head; " +
+    "  if (target) { " +
+    "    var observer = new MutationObserver(function(mutations) { " +
+    "      var title = document.title; " +
+    "      var match = title.match(/\\((\\d+)\\)/); " +
+    "      if (match && parseInt(match[1]) > 0) { " +
+    "        if (window.AndroidApp && window.AndroidApp.onNewMessage) { window.AndroidApp.onNewMessage(); } " +
+    "      } " +
+    "    }); " +
+    "    observer.observe(target, { subtree: true, characterData: true, childList: true }); " +
+    "  } " +
+    "  var styleMobile = document.createElement('style'); " +
+    "  styleMobile.type = 'text/css'; " +
+    "  styleMobile.innerHTML = 'html, body { max-width: 100% !important; overflow-x: hidden !important; } .container, .main-container { width: 100% !important; max-width: 100% !important; }'; " +
+    "  document.head.appendChild(styleMobile); " +
+    "} catch(e) {} " +
+    "})();"
+
 class MainActivity : ComponentActivity() {
 
   private var filePathCallback: ValueCallback<Array<Uri>>? = null
@@ -428,6 +472,7 @@ fun MainScreen(
 
   var chatExpanded by remember { mutableStateOf(false) }
   var chatInitialized by remember { mutableStateOf(false) }
+  var hasNewChatMessage by remember { mutableStateOf(false) }
 
   var isOnlineState by remember { mutableStateOf(true) }
   var hasWebLoadError by remember { mutableStateOf(false) }
@@ -489,6 +534,7 @@ fun MainScreen(
   LaunchedEffect(chatExpanded) {
     if (chatExpanded) {
       chatInitialized = true
+      hasNewChatMessage = false
     }
   }
 
@@ -502,11 +548,20 @@ fun MainScreen(
       )
       configureWebViewSettings(this)
       
-      addJavascriptInterface(WebAppInterface {
-        (context as? Activity)?.runOnUiThread {
-          showCredentialsSheet = true
+      addJavascriptInterface(WebAppInterface(
+        onShowCredentials = {
+          (context as? Activity)?.runOnUiThread {
+            showCredentialsSheet = true
+          }
+        },
+        onNewMessage = {
+          (context as? Activity)?.runOnUiThread {
+            if (!chatExpanded) {
+              hasNewChatMessage = true
+            }
+          }
         }
-      }, "AndroidApp")
+      ), "AndroidApp")
       
       webViewClient = object : WebViewClient() {
         override fun onPageFinished(view: WebView?, url: String?) {
@@ -514,6 +569,7 @@ fun MainScreen(
           isMainLoaded = true
           CookieManager.getInstance().flush()
           view?.loadUrl(JS_BYPASS_WARNINGS)
+          view?.loadUrl(JS_NOTIFICATION_AND_THEME)
         }
 
         override fun onReceivedError(
@@ -602,11 +658,20 @@ fun MainScreen(
       )
       configureWebViewSettings(this)
       
-      addJavascriptInterface(WebAppInterface {
-        (context as? Activity)?.runOnUiThread {
-          showCredentialsSheet = true
+      addJavascriptInterface(WebAppInterface(
+        onShowCredentials = {
+          (context as? Activity)?.runOnUiThread {
+            showCredentialsSheet = true
+          }
+        },
+        onNewMessage = {
+          (context as? Activity)?.runOnUiThread {
+            if (!chatExpanded) {
+              hasNewChatMessage = true
+            }
+          }
         }
-      }, "AndroidApp")
+      ), "AndroidApp")
       
       webViewClient = object : WebViewClient() {
         override fun onPageFinished(view: WebView?, url: String?) {
@@ -614,6 +679,7 @@ fun MainScreen(
           isChatLoaded = true
           CookieManager.getInstance().flush()
           view?.loadUrl(JS_BYPASS_WARNINGS)
+          view?.loadUrl(JS_NOTIFICATION_AND_THEME)
         }
 
         override fun onReceivedError(
@@ -912,31 +978,30 @@ fun MainScreen(
             )
           }
         }
+
+        if (hasNewChatMessage && !chatExpanded) {
+          val infiniteTransition = androidx.compose.animation.core.rememberInfiniteTransition(label = "blink")
+          val blinkAlpha by infiniteTransition.animateFloat(
+            initialValue = 0.2f,
+            targetValue = 1.0f,
+            animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+              animation = androidx.compose.animation.core.tween(durationMillis = 600, easing = androidx.compose.animation.core.LinearEasing),
+              repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
+            ),
+            label = "blink_alpha"
+          )
+          Box(
+            modifier = Modifier
+              .size(12.dp)
+              .align(Alignment.TopEnd)
+              .offset(x = (-4).dp, y = 4.dp)
+              .background(androidx.compose.ui.graphics.Color.Red.copy(alpha = blinkAlpha), shape = androidx.compose.foundation.shape.CircleShape)
+          )
+        }
       }
 
-      // VoIP Call FAB (Bottom-Left Side, completely Circular absolute, in place of deleted lock)
-      Box(
-        modifier = Modifier
-          .align(AbsoluteAlignment.BottomLeft)
-          .absolutePadding(bottom = 24.dp, left = 24.dp)
-          .offset(y = fabYOffset)
-          .size(56.dp)
-          .shadow(elevation = 6.dp, shape = CircleShape)
-          .background(
-            color = if (voipCallState != VoipCallState.IDLE && voipCallState != VoipCallState.DISCONNECTED) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.tertiaryContainer,
-            shape = CircleShape
-          )
-          .clip(CircleShape)
-          .clickable { showVoipSheet = true },
-        contentAlignment = Alignment.Center
-      ) {
-        Icon(
-          imageVector = Icons.Filled.Call,
-          contentDescription = "تماس اینترنتی VoIP",
-          tint = if (voipCallState != VoipCallState.IDLE && voipCallState != VoipCallState.DISCONNECTED) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onTertiaryContainer,
-          modifier = Modifier.size(24.dp)
-        )
-      }
+      // VoIP Call FAB (Bottom-Left Side) temporarily removed as requested
+
 
       // Top-Left Floating Menu Button (smaller than bottom ones, opens the right drawer)
       Box(
@@ -958,112 +1023,8 @@ fun MainScreen(
         )
       }
 
-      // Persistent Real-time Connection Status Indicators (Top Center Capsule)
-      val vpnState by voipManager.vpnState.collectAsState()
-      val registrationState by voipManager.registrationState.collectAsState()
+      // Persistent connection status indicator capsule temporarily removed as requested
 
-      Box(
-        modifier = Modifier
-          .align(Alignment.TopCenter)
-          .absolutePadding(top = 40.dp)
-          .shadow(elevation = 8.dp, shape = RoundedCornerShape(22.dp))
-          .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.9f), shape = RoundedCornerShape(22.dp))
-          .border(
-            width = 1.dp,
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-            shape = RoundedCornerShape(22.dp)
-          )
-          .clip(RoundedCornerShape(22.dp))
-          .clickable { showSettingsDialog = true }
-          .padding(horizontal = 14.dp, vertical = 8.dp)
-      ) {
-        Row(
-          horizontalArrangement = Arrangement.spacedBy(12.dp),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          // VPN Indicator
-          Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            Box(
-              modifier = Modifier
-                .size(8.dp)
-                .background(
-                  color = when (vpnState) {
-                    "Connected" -> Color(0xFF4CAF50)
-                    "Connecting" -> Color(0xFFFFC107)
-                    "Failed" -> Color(0xFFF44336)
-                    else -> Color(0xFF9E9E9E)
-                  },
-                  shape = CircleShape
-                )
-            )
-            Icon(
-              imageVector = Icons.Filled.Lock,
-              contentDescription = "وضعیت VPN",
-              tint = when (vpnState) {
-                "Connected" -> Color(0xFF2E7D32)
-                "Connecting" -> Color(0xFFF57F17)
-                "Failed" -> Color(0xFFC62828)
-                else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-              },
-              modifier = Modifier.size(14.dp)
-            )
-            Text(
-              text = "VPN",
-              color = MaterialTheme.colorScheme.onSurface,
-              style = MaterialTheme.typography.labelSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-            )
-          }
-
-          // Small divider line
-          Box(
-            modifier = Modifier
-              .width(1.dp)
-              .height(14.dp)
-              .background(MaterialTheme.colorScheme.outlineVariant)
-          )
-
-          // SIP / VoIP Indicator
-          Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            Box(
-              modifier = Modifier
-                .size(8.dp)
-                .background(
-                  color = when (registrationState) {
-                    "Registered" -> Color(0xFF4CAF50)
-                    "Registering" -> Color(0xFFFFC107)
-                    "VpnConnecting" -> Color(0xFF9C27B0)
-                    "Failed" -> Color(0xFFF44336)
-                    else -> Color(0xFF9E9E9E)
-                  },
-                  shape = CircleShape
-                )
-            )
-            Icon(
-              imageVector = Icons.Filled.Call,
-              contentDescription = "وضعیت VoIP",
-              tint = when (registrationState) {
-                "Registered" -> Color(0xFF2E7D32)
-                "Registering" -> Color(0xFFF57F17)
-                "VpnConnecting" -> Color(0xFF6A1B9A)
-                "Failed" -> Color(0xFFC62828)
-                else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-              },
-              modifier = Modifier.size(14.dp)
-            )
-            Text(
-              text = "VoIP",
-              color = MaterialTheme.colorScheme.onSurface,
-              style = MaterialTheme.typography.labelSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-            )
-          }
-        }
-      }
 
       if (showVoipSheet) {
         VoipDialog(
@@ -1140,57 +1101,8 @@ fun MainScreen(
 
                 Divider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 8.dp))
 
-                // Settings Item
-                Row(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(MaterialTheme.shapes.medium)
-                    .clickable {
-                      showSettingsDialog = true
-                      isDrawerOpen = false
-                    }
-                    .padding(vertical = 12.dp, horizontal = 8.dp),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                  Icon(
-                    imageVector = Icons.Filled.Settings,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(24.dp)
-                  )
-                  Text(
-                    text = "تنظیمات پیشرفته (VoIP)",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                  )
-                }
+                // VoIP features are temporarily disabled
 
-                // Dialer Item
-                Row(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(MaterialTheme.shapes.medium)
-                    .clickable {
-                      showVoipSheet = true
-                      isDrawerOpen = false
-                    }
-                    .padding(vertical = 12.dp, horizontal = 8.dp),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                  Icon(
-                    imageVector = Icons.Filled.Call,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(24.dp)
-                  )
-                  Text(
-                    text = "شماره‌گیر تلفن اینترنتی",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                  )
-                }
 
                 // Credentials Item
                 Row(
@@ -1810,10 +1722,18 @@ fun FloatingCredentialsMenu(
   }
 }
 
-class WebAppInterface(private val onShowCredentials: () -> Unit) {
+class WebAppInterface(
+  private val onShowCredentials: () -> Unit,
+  private val onNewMessage: (() -> Unit)? = null
+) {
   @JavascriptInterface
   fun showCredentials() {
     onShowCredentials()
+  }
+
+  @JavascriptInterface
+  fun onNewMessage() {
+    onNewMessage?.invoke()
   }
 }
 

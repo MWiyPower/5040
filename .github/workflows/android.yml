@@ -11,6 +11,9 @@ on:
       - master
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -39,14 +42,24 @@ jobs:
         run: |
           echo "GEMINI_API_KEY=placeholder_api_key" > .env
 
-      - name: Build APKs
+      - name: Build Release APK
         run: |
-          gradle assembleDebug assembleRelease --stacktrace
+          gradle assembleRelease --stacktrace
 
-      - name: Upload APKs
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: android-build-apks
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            app/build/outputs/apk/release/*.apk
+          name: android-release-apk
+          path: app/build/outputs/apk/release/*.apk
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v1.0.${{ github.run_number }}"
+          name: "Release v1.0.${{ github.run_number }}"
+          draft: false
+          prerelease: false
+          files: app/build/outputs/apk/release/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
