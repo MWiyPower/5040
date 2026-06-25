@@ -34,6 +34,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
 import android.provider.Settings
 import androidx.compose.foundation.layout.*
@@ -948,6 +949,113 @@ fun MainScreen(
           tint = MaterialTheme.colorScheme.onPrimaryContainer,
           modifier = Modifier.size(20.dp)
         )
+      }
+
+      // Persistent Real-time Connection Status Indicators (Top Center Capsule)
+      val vpnState by voipManager.vpnState.collectAsState()
+      val registrationState by voipManager.registrationState.collectAsState()
+
+      Box(
+        modifier = Modifier
+          .align(Alignment.TopCenter)
+          .absolutePadding(top = 40.dp)
+          .shadow(elevation = 8.dp, shape = RoundedCornerShape(22.dp))
+          .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.9f), shape = RoundedCornerShape(22.dp))
+          .border(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+            shape = RoundedCornerShape(22.dp)
+          )
+          .clip(RoundedCornerShape(22.dp))
+          .clickable { showSettingsDialog = true }
+          .padding(horizontal = 14.dp, vertical = 8.dp)
+      ) {
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(12.dp),
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          // VPN Indicator
+          Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Box(
+              modifier = Modifier
+                .size(8.dp)
+                .background(
+                  color = when (vpnState) {
+                    "Connected" -> Color(0xFF4CAF50)
+                    "Connecting" -> Color(0xFFFFC107)
+                    "Failed" -> Color(0xFFF44336)
+                    else -> Color(0xFF9E9E9E)
+                  },
+                  shape = CircleShape
+                )
+            )
+            Icon(
+              imageVector = Icons.Filled.Lock,
+              contentDescription = "وضعیت VPN",
+              tint = when (vpnState) {
+                "Connected" -> Color(0xFF2E7D32)
+                "Connecting" -> Color(0xFFF57F17)
+                "Failed" -> Color(0xFFC62828)
+                else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+              },
+              modifier = Modifier.size(14.dp)
+            )
+            Text(
+              text = "VPN",
+              color = MaterialTheme.colorScheme.onSurface,
+              style = MaterialTheme.typography.labelSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+            )
+          }
+
+          // Small divider line
+          Box(
+            modifier = Modifier
+              .width(1.dp)
+              .height(14.dp)
+              .background(MaterialTheme.colorScheme.outlineVariant)
+          )
+
+          // SIP / VoIP Indicator
+          Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Box(
+              modifier = Modifier
+                .size(8.dp)
+                .background(
+                  color = when (registrationState) {
+                    "Registered" -> Color(0xFF4CAF50)
+                    "Registering" -> Color(0xFFFFC107)
+                    "VpnConnecting" -> Color(0xFF9C27B0)
+                    "Failed" -> Color(0xFFF44336)
+                    else -> Color(0xFF9E9E9E)
+                  },
+                  shape = CircleShape
+                )
+            )
+            Icon(
+              imageVector = Icons.Filled.Call,
+              contentDescription = "وضعیت VoIP",
+              tint = when (registrationState) {
+                "Registered" -> Color(0xFF2E7D32)
+                "Registering" -> Color(0xFFF57F17)
+                "VpnConnecting" -> Color(0xFF6A1B9A)
+                "Failed" -> Color(0xFFC62828)
+                else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+              },
+              modifier = Modifier.size(14.dp)
+            )
+            Text(
+              text = "VoIP",
+              color = MaterialTheme.colorScheme.onSurface,
+              style = MaterialTheme.typography.labelSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+            )
+          }
+        }
       }
 
       if (showVoipSheet) {
@@ -2449,6 +2557,7 @@ fun SettingsDialog(
   val accountState by voipManager.accountState.collectAsState()
   val registrationState by voipManager.registrationState.collectAsState()
   val vpnConfigState by voipManager.vpnConfigState.collectAsState()
+  val vpnState by voipManager.vpnState.collectAsState()
 
   var sipServer by remember { mutableStateOf(accountState.server) }
   var sipUser by remember { mutableStateOf(accountState.username) }
@@ -2483,9 +2592,114 @@ fun SettingsDialog(
       androidx.compose.foundation.lazy.LazyColumn(
         modifier = Modifier
           .width(320.dp)
-          .heightIn(max = 480.dp),
+          .heightIn(max = 500.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
       ) {
+        item {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f), shape = MaterialTheme.shapes.medium)
+              .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            Text(
+              text = "وضعیت لحظه‌ای ارتباطات",
+              style = MaterialTheme.typography.labelMedium,
+              color = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.padding(bottom = 4.dp)
+            )
+            
+            // VPN Status indicator
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Box(
+                  modifier = Modifier
+                    .size(8.dp)
+                    .background(
+                      color = when (vpnState) {
+                        "Connected" -> Color(0xFF4CAF50)
+                        "Connecting" -> Color(0xFFFFC107)
+                        "Failed" -> Color(0xFFF44336)
+                        else -> Color(0xFF9E9E9E)
+                      },
+                      shape = CircleShape
+                    )
+                )
+                Text("تونل VPN اختصاصی:", style = MaterialTheme.typography.bodySmall)
+              }
+              Text(
+                text = when (vpnState) {
+                  "Connected" -> "متصل (ایمن)"
+                  "Connecting" -> "در حال برقراری..."
+                  "Failed" -> "خطا در اتصال"
+                  else -> "غیرفعال"
+                },
+                color = when (vpnState) {
+                  "Connected" -> Color(0xFF2E7D32)
+                  "Connecting" -> Color(0xFFF57F17)
+                  "Failed" -> Color(0xFFC62828)
+                  else -> Color(0xFF455A64)
+                },
+                style = MaterialTheme.typography.labelSmall
+              )
+            }
+
+            // SIP Status indicator
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Box(
+                  modifier = Modifier
+                    .size(8.dp)
+                    .background(
+                      color = when (registrationState) {
+                        "Registered" -> Color(0xFF4CAF50)
+                        "Registering" -> Color(0xFFFFC107)
+                        "VpnConnecting" -> Color(0xFF9C27B0)
+                        "Failed" -> Color(0xFFF44336)
+                        else -> Color(0xFF9E9E9E)
+                      },
+                      shape = CircleShape
+                    )
+                )
+                Text("سرور تلفنی SIP (VoIP):", style = MaterialTheme.typography.bodySmall)
+              }
+              Text(
+                text = when (registrationState) {
+                  "Registered" -> "متصل و فعال"
+                  "Registering" -> "در حال ثبت‌نام..."
+                  "VpnConnecting" -> "در انتظار VPN..."
+                  "Failed" -> "خطا در اتصال"
+                  else -> "قطع ارتباط"
+                },
+                color = when (registrationState) {
+                  "Registered" -> Color(0xFF2E7D32)
+                  "Registering" -> Color(0xFFF57F17)
+                  "VpnConnecting" -> Color(0xFF6A1B9A)
+                  "Failed" -> Color(0xFFC62828)
+                  else -> Color(0xFF455A64)
+                },
+                style = MaterialTheme.typography.labelSmall
+              )
+            }
+          }
+          androidx.compose.material3.Divider(modifier = Modifier.padding(vertical = 4.dp))
+        }
+
         item {
           Text(
             text = "تنظیمات اتصال VoIP (SIP)",

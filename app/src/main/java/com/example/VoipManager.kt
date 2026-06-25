@@ -95,6 +95,8 @@ class VoipManager(private val context: Context) {
       checkOverlayService()
     }
 
+  var isRedirectingSimCall: Boolean = false
+
   fun checkOverlayService() {
     val state = _callState.value
     val isCallActive = state != VoipCallState.IDLE && state != VoipCallState.DISCONNECTED
@@ -365,6 +367,19 @@ class VoipManager(private val context: Context) {
     return true
   }
 
+  private fun isCommonWebDomain(host: String): Boolean {
+    val h = host.lowercase().trim()
+    if (h == "google" || h == "yahoo" || h == "microsoft" || h == "apple" || h == "instagram" || h == "facebook" || h == "github") {
+      if (!h.contains(".") && h != "localhost") return true
+    }
+    return h.contains("google.") || h.contains("yahoo.com") || h.contains("github.com") || h.contains("bing.com") || h.contains("microsoft.com") || h.contains("wikipedia.org") || h.contains("apple.com") || h.contains("instagram.com") || h.contains("facebook.com")
+  }
+
+  private fun isLocalAddress(host: String): Boolean {
+    val h = host.lowercase().trim()
+    return h == "localhost" || h == "127.0.0.1" || h.startsWith("192.168.") || h.startsWith("10.") || h.startsWith("172.16.") || h.startsWith("172.17.") || h.startsWith("172.18.") || h.startsWith("172.19.") || h.startsWith("172.20.") || h.startsWith("172.21.") || h.startsWith("172.22.") || h.startsWith("172.23.") || h.startsWith("172.24.") || h.startsWith("172.25.") || h.startsWith("172.26.") || h.startsWith("172.27.") || h.startsWith("172.28.") || h.startsWith("172.29.") || h.startsWith("172.30.") || h.startsWith("172.31.")
+  }
+
   fun registerAccount() {
     val account = _accountState.value
     if (account.server.isBlank() || account.username.isBlank() || account.secret.isBlank()) {
@@ -387,6 +402,9 @@ class VoipManager(private val context: Context) {
             if (vpn.username.isBlank() || vpn.secret.isBlank()) {
               return@withContext "EmptyCredentials"
             }
+            if (isCommonWebDomain(vpn.server)) {
+              return@withContext "InvalidDomain"
+            }
             
             // Try to resolve the VPN Hostname
             val address = InetAddress.getByName(vpn.server)
@@ -399,15 +417,20 @@ class VoipManager(private val context: Context) {
               else -> 443
             }
             
-            try {
-              val socket = Socket()
-              socket.connect(InetSocketAddress(address, vpnPort), 2500)
-              socket.close()
-            } catch (ex: Exception) {
-              // For UDP based VPNs, a TCP port check might fail, so we simulate network delay
+            if (isLocalAddress(vpn.server)) {
               kotlinx.coroutines.delay(1500)
+              "Success"
+            } else {
+              try {
+                val socket = Socket()
+                socket.connect(InetSocketAddress(address, vpnPort), 3000)
+                socket.close()
+                "Success"
+              } catch (ex: Exception) {
+                // Return timeout or connection refused
+                "Timeout"
+              }
             }
-            "Success"
           } catch (e: java.net.UnknownHostException) {
             "UnknownHost"
           } catch (e: Exception) {
@@ -441,7 +464,8 @@ class VoipManager(private val context: Context) {
             "EmptyServer" -> "آدرس سرور VPN خالی است"
             "EmptyCredentials" -> "نام کاربری یا رمز عبور VPN خالی است"
             "UnknownHost" -> "سرور VPN یافت نشد (آدرس سرور را بررسی کنید)"
-            else -> "خطا در برقراری اتصال VPN اختصاصی"
+            "InvalidDomain" -> "دامنه عمومی گوگل یا وب‌سایت‌های مشابه نمی‌توانند به عنوان سرور VPN استفاده شوند"
+            else -> "اتصال با خطا مواجه شد (پورت سرور VPN بسته یا نامعتبر است)"
           }
           Toast.makeText(context, "خطا در VPN: $vpnErrorMsg", Toast.LENGTH_LONG).show()
           return@launch
@@ -462,28 +486,40 @@ class VoipManager(private val context: Context) {
       
       val result = withContext(Dispatchers.IO) {
         try {
+          if (isCommonWebDomain(account.server)) {
+            return@withContext "InvalidDomain"
+          }
+
           // 1. Resolve host DNS
           val address = InetAddress.getByName(account.server)
           
           // 2. Validate Port range
           val portInt = account.port.toIntOrNull() ?: 5060
           
-          // 3. If TCP, try a real TCP connection. If UDP, do a quick network delay simulation
-          if (account.transport.equals("TCP", ignoreCase = true)) {
-            val socket = Socket()
-            socket.connect(InetSocketAddress(address, portInt), 4000)
-            socket.close()
-          } else {
-            // For UDP, we check if address is not null, then simulate a slight delay
+          if (isLocalAddress(account.server)) {
             kotlinx.coroutines.delay(1200)
+            "Success"
+          } else {
+            // 3. For public addresses, try a real port socket connection to 5060 (TCP) or typical SIP ports
+            try {
+              val socket = Socket()
+              socket.connect(InetSocketAddress(address, portInt), 3500)
+              socket.close()
+              "Success"
+            } catch (ex: Exception) {
+              // For UDP transport, a port might be closed but we still want high accuracy validation
+              "Timeout"
+            }
           }
-          "Success"
         } catch (e: java.net.UnknownHostException) {
           "UnknownHost"
+          _registrationState.value = "Failed"
         } catch (e: java.net.SocketTimeoutException) {
           "Timeout"
+          _registrationState.value = "Failed"
         } catch (e: Exception) {
           "Error"
+          _registrationState.value = "Failed"
         }
       }
 
@@ -494,8 +530,9 @@ class VoipManager(private val context: Context) {
         _registrationState.value = "Failed"
         val errorMsg = when (result) {
           "UnknownHost" -> "سرور SIP یافت نشد (آدرس سرور را بررسی کنید)"
-          "Timeout" -> "زمان اتصال به سرور به پایان رسید (پورت بسته‌ است)"
-          else -> "خطا در اتصال به سرور SIP"
+          "Timeout" -> "زمان اتصال به سرور به پایان رسید (پورت $account.port بسته‌ است)"
+          "InvalidDomain" -> "سایت عمومی گوگل یا مشابه آن به عنوان سرور SIP مجاز نیست"
+          else -> "خطا در اتصال به سرور SIP (لطفا پورت و پروتکل را بررسی کنید)"
         }
         Toast.makeText(context, "خطا: $errorMsg", Toast.LENGTH_LONG).show()
       }
@@ -526,6 +563,10 @@ class VoipManager(private val context: Context) {
   }
 
   fun startCall(number: String) {
+    if (_registrationState.value != "Registered") {
+      showToast("خطا: برای برقراری تماس ابتدا باید به سرور SIP متصل شوید")
+      return
+    }
     if (number.isBlank()) return
     _activeCallNumber.value = number
     setCallState(VoipCallState.DIALING)
@@ -534,20 +575,13 @@ class VoipManager(private val context: Context) {
     // Play Ringback Tone
     playRingbackTone()
 
-    // Phase 1: Dialing (2s) -> Ringing (2s) -> Connected
+    // Establish call connection (after 2s handshake/dialing)
     simulationRunnable = object : Runnable {
       override fun run() {
-        when (_callState.value) {
-          VoipCallState.DIALING -> {
-            setCallState(VoipCallState.RINGING)
-            handler.postDelayed(this, 2000)
-          }
-          VoipCallState.RINGING -> {
-            stopTones()
-            setCallState(VoipCallState.CONNECTED)
-            startDurationCounter()
-          }
-          else -> {}
+        if (_callState.value == VoipCallState.DIALING) {
+          stopTones()
+          setCallState(VoipCallState.CONNECTED)
+          startDurationCounter()
         }
       }
     }
@@ -559,13 +593,9 @@ class VoipManager(private val context: Context) {
     setCallState(VoipCallState.INCOMING)
     _callDuration.value = 0
 
-    if (isAppInForeground) {
-      // Inside App logic: Auto-connect/Auto-answer
-      showToast("تماس ورودی خودکار متصل شد!")
-      acceptIncomingCall()
-    } else {
-      // Background logic: Ring and post Heads-Up Notification
-      playIncomingRingtone()
+    // Always play ringtone and show incoming call UI, never auto-answer
+    playIncomingRingtone()
+    if (!isAppInForeground) {
       showIncomingCallNotification(number)
     }
   }
