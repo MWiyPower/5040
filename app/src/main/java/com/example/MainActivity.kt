@@ -18,6 +18,13 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.*
 import android.widget.Toast
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
+import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -96,54 +103,13 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.example.ui.theme.MyApplicationTheme
 
 private const val JS_BYPASS_WARNINGS = "javascript:(function() { " +
-    "window.alert = function() { return true; }; " +
-    "window.confirm = function() { return true; }; " +
-    "window.prompt = function() { return null; }; " +
-    "var style = document.createElement('style'); " +
-    "style.type = 'text/css'; " +
-    "style.innerHTML = '.old-browser, #old-browser, .browser-upgrade, .outdated-browser, .browser-alert, [class*=\\'update-browser\\'], [class*=\\'old-browser\\'], [id*=\\'update-browser\\'], [id*=\\'old-browser\\'], [class*=\\'unsupported\\'], [id*=\\'unsupported\\'], [class*=\\'warning\\'], [id*=\\'warning\\'] { display: none !important; visibility: hidden !important; height: 0 !important; opacity: 0 !important; pointer-events: none !important; }'; " +
-    "document.head.appendChild(style); " +
-    "var meta = document.createElement('meta'); " +
-    "meta.name = 'viewport'; " +
-    "meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, shrink-to-fit=no'; " +
-    "document.head.appendChild(meta); " +
-    "var checkAndRemove = function() { " +
-    "  var rx = /\\u0642\\u062f\\u06cc\\u0645\\u06cc|\\u0628\\u0631\\u0648\\u0632\\u0631\\u0633\\u0627\\u0646\\u06cc|\\u0622\\u067e\\u062f\\u06cc\\u062a|\\u0646\\u0633\\u062e\\u0647|browser|update|support|old|outdated/i; " +
-    "  var elems = document.querySelectorAll('div, section, dialog, p, span, h1, h2, h3'); " +
-    "  for (var i = 0; i < elems.length; i++) { " +
-    "    var text = elems[i].textContent || elems[i].innerText || ''; " +
-    "    if (rx.test(text)) { " +
-    "      var pos = window.getComputedStyle(elems[i]).position; " +
-    "      if (pos === 'fixed' || pos === 'absolute' || elems[i].className.indexOf('warning') !== -1 || elems[i].id.indexOf('warning') !== -1 || elems[i].className.indexOf('alert') !== -1 || elems[i].id.indexOf('alert') !== -1) { " +
-    "        elems[i].style.setProperty('display', 'none', 'important'); " +
-    "      } " +
-    "    } " +
-    "  } " +
-    "}; " +
-    "checkAndRemove(); " +
-    "setInterval(checkAndRemove, 500); " +
-    "var addInputListeners = function() { " +
-    "  var inputs = document.querySelectorAll('input'); " +
-    "  for (var i = 0; i < inputs.length; i++) { " +
-    "    if (inputs[i].dataset.listenerAdded) continue; " +
-    "    inputs[i].dataset.listenerAdded = 'true'; " +
-    "    var callback = function() { " +
-    "      var type = this.getAttribute('type') || ''; " +
-    "      var name = this.getAttribute('name') || ''; " +
-    "      var id = this.getAttribute('id') || ''; " +
-    "      if (type === 'password' || type === 'email' || type === 'text' || name.indexOf('user') !== -1 || name.indexOf('email') !== -1 || id.indexOf('user') !== -1 || id.indexOf('email') !== -1) { " +
-    "        if (window.AndroidApp && typeof window.AndroidApp.showCredentials === 'function') { " +
-    "          window.AndroidApp.showCredentials(); " +
-    "        } " +
-    "      } " +
-    "    }; " +
-    "    inputs[i].addEventListener('focus', callback); " +
-    "    inputs[i].addEventListener('click', callback); " +
-    "  } " +
-    "}; " +
-    "addInputListeners(); " +
-    "setInterval(addInputListeners, 1000); " +
-    "})()"
+    "try { " +
+    "  var meta = document.createElement('meta'); " +
+    "  meta.name = 'viewport'; " +
+    "  meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, shrink-to-fit=no'; " +
+    "  document.head.appendChild(meta); " +
+    "} catch(e) {} " +
+    "})();"
 
 private const val JS_NOTIFICATION_AND_THEME = "javascript:(function() { " +
     "try { " +
@@ -255,7 +221,8 @@ class MainActivity : ComponentActivity() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
       val neededPerms = mutableListOf(
         android.Manifest.permission.READ_PHONE_STATE,
-        android.Manifest.permission.RECORD_AUDIO
+        android.Manifest.permission.RECORD_AUDIO,
+        android.Manifest.permission.RECEIVE_SMS
       )
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
         neededPerms.add(android.Manifest.permission.READ_CALL_LOG)
@@ -540,6 +507,92 @@ fun MainScreen(
 
   var mainWebViewRef by remember { mutableStateOf<WebView?>(null) }
   var chatWebViewRef by remember { mutableStateOf<WebView?>(null) }
+
+  val coroutineScope = rememberCoroutineScope()
+  var updateInfoState by remember { mutableStateOf<UpdateInfo?>(null) }
+  var isDownloadingUpdate by remember { mutableStateOf(false) }
+  var downloadProgressUpdate by remember { mutableStateOf(0f) }
+
+  LaunchedEffect(Unit) {
+    try {
+      val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+      val currentVersion = packageInfo.versionName ?: "1.0.0"
+      val info = checkForUpdates(currentVersion)
+      if (info.hasUpdate) {
+        updateInfoState = info
+      }
+    } catch (e: Exception) {
+      e.printStackTrace()
+    }
+  }
+
+  DisposableEffect(context) {
+    val smsReceiverObj = object : android.content.BroadcastReceiver() {
+      override fun onReceive(context: Context?, intent: Intent?) {
+        if (intent?.action == "android.provider.Telephony.SMS_RECEIVED") {
+          val bundle = intent.extras
+          if (bundle != null) {
+            try {
+              val pdus = bundle.get("pdus") as? Array<*>
+              if (pdus != null) {
+                for (pdu in pdus) {
+                  val format = bundle.getString("format")
+                  val message = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    android.telephony.SmsMessage.createFromPdu(pdu as ByteArray, format)
+                  } else {
+                    @Suppress("DEPRECATION")
+                    android.telephony.SmsMessage.createFromPdu(pdu as ByteArray)
+                  }
+                  val sender = message.displayOriginatingAddress ?: ""
+                  val body = message.displayMessageBody ?: ""
+                  
+                  if (sender.contains("50003784563")) {
+                    val match = Regex("کد ورود به سیستم:\\s*(\\d+)").find(body)
+                    val code = match?.groupValues?.getOrNull(1)
+                    if (code != null) {
+                      val js = String.format(
+                        "javascript:(function() { " +
+                        "var inputs = document.querySelectorAll('input'); " +
+                        "for (var i = 0; i < inputs.length; i++) { " +
+                        "  var input = inputs[i]; " +
+                        "  var type = input.getAttribute('type') || ''; " +
+                        "  if (type === 'text' || type === 'number' || type === 'tel' || type === '') { " +
+                        "    if (!input.value || input.value.trim() === '') { " +
+                        "      input.value = '%s'; " +
+                        "      input.dispatchEvent(new Event('input', { bubbles: true })); " +
+                        "      input.dispatchEvent(new Event('change', { bubbles: true })); " +
+                        "      break; " +
+                        "    } " +
+                        "  } " +
+                        "} " +
+                        "})()",
+                        code
+                      )
+                      mainWebViewRef?.post {
+                        mainWebViewRef?.loadUrl(js)
+                        Toast.makeText(context, "کد تایید به صورت خودکار وارد شد: $code", Toast.LENGTH_LONG).show()
+                      }
+                    }
+                  }
+                }
+              }
+            } catch (e: Exception) {
+              e.printStackTrace()
+            }
+          }
+        }
+      }
+    }
+    val filter = android.content.IntentFilter("android.provider.Telephony.SMS_RECEIVED")
+    context.registerReceiver(smsReceiverObj, filter)
+    onDispose {
+      try {
+        context.unregisterReceiver(smsReceiverObj)
+      } catch (e: Exception) {
+        e.printStackTrace()
+      }
+    }
+  }
   val mainWebView = remember {
     WebView(context).apply {
       layoutParams = ViewGroup.LayoutParams(
@@ -630,17 +683,41 @@ fun MainScreen(
         }
 
         override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
-          result?.confirm()
+          view?.context?.let { ctx ->
+            android.app.AlertDialog.Builder(ctx)
+              .setMessage(message)
+              .setPositiveButton("تایید") { _, _ -> result?.confirm() }
+              .setOnCancelListener { result?.cancel() }
+              .show()
+          } ?: result?.confirm()
           return true
         }
 
         override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
-          result?.confirm()
+          view?.context?.let { ctx ->
+            android.app.AlertDialog.Builder(ctx)
+              .setMessage(message)
+              .setPositiveButton("بله") { _, _ -> result?.confirm() }
+              .setNegativeButton("خیر") { _, _ -> result?.cancel() }
+              .setOnCancelListener { result?.cancel() }
+              .show()
+          } ?: result?.cancel()
           return true
         }
 
         override fun onJsPrompt(view: WebView?, url: String?, message: String?, defaultValue: String?, result: JsPromptResult?): Boolean {
-          result?.confirm()
+          view?.context?.let { ctx ->
+            val input = android.widget.EditText(ctx).apply {
+              setText(defaultValue)
+            }
+            android.app.AlertDialog.Builder(ctx)
+              .setMessage(message)
+              .setView(input)
+              .setPositiveButton("تایید") { _, _ -> result?.confirm(input.text.toString()) }
+              .setNegativeButton("انصراف") { _, _ -> result?.cancel() }
+              .setOnCancelListener { result?.cancel() }
+              .show()
+          } ?: result?.cancel()
           return true
         }
       }
@@ -740,17 +817,41 @@ fun MainScreen(
         }
 
         override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
-          result?.confirm()
+          view?.context?.let { ctx ->
+            android.app.AlertDialog.Builder(ctx)
+              .setMessage(message)
+              .setPositiveButton("تایید") { _, _ -> result?.confirm() }
+              .setOnCancelListener { result?.cancel() }
+              .show()
+          } ?: result?.confirm()
           return true
         }
 
         override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
-          result?.confirm()
+          view?.context?.let { ctx ->
+            android.app.AlertDialog.Builder(ctx)
+              .setMessage(message)
+              .setPositiveButton("بله") { _, _ -> result?.confirm() }
+              .setNegativeButton("خیر") { _, _ -> result?.cancel() }
+              .setOnCancelListener { result?.cancel() }
+              .show()
+          } ?: result?.cancel()
           return true
         }
 
         override fun onJsPrompt(view: WebView?, url: String?, message: String?, defaultValue: String?, result: JsPromptResult?): Boolean {
-          result?.confirm()
+          view?.context?.let { ctx ->
+            val input = android.widget.EditText(ctx).apply {
+              setText(defaultValue)
+            }
+            android.app.AlertDialog.Builder(ctx)
+              .setMessage(message)
+              .setView(input)
+              .setPositiveButton("تایید") { _, _ -> result?.confirm(input.text.toString()) }
+              .setNegativeButton("انصراف") { _, _ -> result?.cancel() }
+              .setOnCancelListener { result?.cancel() }
+              .show()
+          } ?: result?.cancel()
           return true
         }
       }
@@ -777,8 +878,36 @@ fun MainScreen(
   Box(
     modifier = Modifier
       .fillMaxSize()
-      .systemBarsPadding()
   ) {
+    val info = updateInfoState
+    if (info != null) {
+      UpdateBlockScreen(
+        latestVersion = info.latestVersion,
+        releaseNotes = info.releaseNotes,
+        downloadUrl = info.downloadUrl,
+        onDownloadAndInstall = { url ->
+          isDownloadingUpdate = true
+          coroutineScope.launch {
+            val apkFile = downloadApk(context, url) { progress ->
+              downloadProgressUpdate = progress
+            }
+            isDownloadingUpdate = false
+            if (apkFile != null) {
+              installApk(context, apkFile)
+            } else {
+              Toast.makeText(context, "خطا در دانلود فایل بروزرسانی", Toast.LENGTH_LONG).show()
+            }
+          }
+        },
+        isDownloading = isDownloadingUpdate,
+        downloadProgress = downloadProgressUpdate
+      )
+    } else {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .systemBarsPadding()
+      ) {
     if (isOfflineOrError) {
       Box(
         modifier = Modifier
@@ -1241,6 +1370,8 @@ fun MainScreen(
           }
         )
       }
+    }
+    }
     }
   }
 }
@@ -3024,6 +3155,253 @@ fun SettingsDialog(
       }
     }
   )
+}
+
+data class UpdateInfo(
+  val hasUpdate: Boolean,
+  val latestVersion: String,
+  val downloadUrl: String?,
+  val releaseNotes: String?
+)
+
+fun isNewerVersion(current: String, latest: String): Boolean {
+  val cleanCurr = current.replace("v", "").replace("V", "").trim()
+  val cleanLat = latest.replace("v", "").replace("V", "").trim()
+  val currParts = cleanCurr.split(".").map { it.toIntOrNull() ?: 0 }
+  val latParts = cleanLat.split(".").map { it.toIntOrNull() ?: 0 }
+  for (i in 0 until maxOf(currParts.size, latParts.size)) {
+    val currVal = currParts.getOrNull(i) ?: 0
+    val latVal = latParts.getOrNull(i) ?: 0
+    if (latVal > currVal) return true
+    if (currVal > latVal) return false
+  }
+  return false
+}
+
+suspend fun checkForUpdates(currentVersion: String): UpdateInfo = withContext(Dispatchers.IO) {
+  try {
+    val url = URL("https://api.github.com/repos/valiorsw/p5040/releases/latest")
+    val conn = url.openConnection() as HttpURLConnection
+    conn.requestMethod = "GET"
+    conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
+    conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+    conn.connectTimeout = 8000
+    conn.readTimeout = 8000
+    
+    if (conn.responseCode == 200) {
+      val response = conn.inputStream.bufferedReader().use { it.readText() }
+      val json = JSONObject(response)
+      val latestTagName = json.optString("tag_name", "").trim()
+      val body = json.optString("body", "")
+      
+      var downloadUrl: String? = null
+      val assets = json.optJSONArray("assets")
+      if (assets != null) {
+        for (i in 0 until assets.length()) {
+          val asset = assets.getJSONObject(i)
+          val name = asset.optString("name", "")
+          if (name.endsWith(".apk")) {
+            downloadUrl = asset.optString("browser_download_url")
+            break
+          }
+        }
+      }
+      
+      if (latestTagName.isNotEmpty()) {
+        val hasUpdate = isNewerVersion(currentVersion, latestTagName)
+        return@withContext UpdateInfo(hasUpdate, latestTagName, downloadUrl, body)
+      }
+    }
+  } catch (e: Exception) {
+    e.printStackTrace()
+  }
+  return@withContext UpdateInfo(false, currentVersion, null, null)
+}
+
+suspend fun downloadApk(context: Context, downloadUrl: String, onProgress: (Float) -> Unit): File? = withContext(Dispatchers.IO) {
+  try {
+    val url = URL(downloadUrl)
+    val conn = url.openConnection() as HttpURLConnection
+    conn.connectTimeout = 15000
+    conn.readTimeout = 15000
+    conn.connect()
+    
+    val lengthOfFile = conn.contentLength
+    val input = conn.inputStream
+    
+    val apkFile = File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS), "update.apk")
+    if (apkFile.exists()) {
+      apkFile.delete()
+    }
+    
+    val output = FileOutputStream(apkFile)
+    val data = ByteArray(8192)
+    var total: Long = 0
+    var count: Int
+    while (input.read(data).also { count = it } != -1) {
+      total += count
+      if (lengthOfFile > 0) {
+        onProgress(total.toFloat() / lengthOfFile.toFloat())
+      }
+      output.write(data, 0, count)
+    }
+    output.flush()
+    output.close()
+    input.close()
+    return@withContext apkFile
+  } catch (e: Exception) {
+    e.printStackTrace()
+  }
+  return@withContext null
+}
+
+fun installApk(context: Context, apkFile: File) {
+  try {
+    val authority = "${context.packageName}.fileprovider"
+    val apkUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+      androidx.core.content.FileProvider.getUriForFile(context, authority, apkFile)
+    } else {
+      Uri.fromFile(apkFile)
+    }
+    
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+      setDataAndType(apkUri, "application/vnd.android.package-archive")
+      flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+    }
+    
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      if (!context.packageManager.canRequestPackageInstalls()) {
+        val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+          data = Uri.parse("package:${context.packageName}")
+          flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        context.startActivity(settingsIntent)
+        Toast.makeText(context, "لطفاً اجازه نصب برنامه از این منبع را فعال کنید و سپس دکمه نصب را مجدد بزنید", Toast.LENGTH_LONG).show()
+        return
+      }
+    }
+    context.startActivity(intent)
+  } catch (e: Exception) {
+    e.printStackTrace()
+    Toast.makeText(context, "خطا در نصب برنامه: ${e.message}", Toast.LENGTH_LONG).show()
+  }
+}
+
+@Composable
+fun UpdateBlockScreen(
+  latestVersion: String,
+  releaseNotes: String?,
+  downloadUrl: String?,
+  onDownloadAndInstall: (String) -> Unit,
+  isDownloading: Boolean,
+  downloadProgress: Float
+) {
+  val context = LocalContext.current
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .background(MaterialTheme.colorScheme.background)
+      .padding(24.dp),
+    contentAlignment = Alignment.Center
+  ) {
+    Column(
+      horizontalAlignment = Alignment.CenterHorizontally,
+      verticalArrangement = Arrangement.Center,
+      modifier = Modifier.fillMaxWidth()
+    ) {
+      Icon(
+        imageVector = Icons.Filled.Info,
+        contentDescription = "بروزرسانی جدید",
+        tint = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.size(72.dp)
+      )
+      
+      Spacer(modifier = Modifier.height(24.dp))
+      
+      Text(
+        text = "بروزرسانی اجباری برنامه",
+        style = MaterialTheme.typography.headlineMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+        color = MaterialTheme.colorScheme.onBackground,
+        textAlign = TextAlign.Center
+      )
+      
+      Spacer(modifier = Modifier.height(12.dp))
+      
+      Text(
+        text = "نسخه جدید برنامه ($latestVersion) در دسترس است. برای ادامه استفاده از خدمات، حتماً باید برنامه را آپدیت کنید.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
+        textAlign = TextAlign.Center,
+        modifier = Modifier.padding(horizontal = 16.dp)
+      )
+      
+      if (!releaseNotes.isNullOrEmpty()) {
+        Spacer(modifier = Modifier.height(16.dp))
+        Card(
+          colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+        ) {
+          Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+              text = "تغییرات نسخه جدید:",
+              style = MaterialTheme.typography.titleSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+              color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+              text = releaseNotes,
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+            )
+          }
+        }
+      }
+      
+      Spacer(modifier = Modifier.height(32.dp))
+      
+      if (isDownloading) {
+        Column(
+          horizontalAlignment = Alignment.CenterHorizontally,
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp)
+        ) {
+          LinearProgressIndicator(
+            progress = downloadProgress,
+            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp))
+          )
+          Spacer(modifier = Modifier.height(8.dp))
+          Text(
+            text = "در حال دانلود: ${(downloadProgress * 100).toInt()}%",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary
+          )
+        }
+      } else {
+        Button(
+          onClick = {
+            if (downloadUrl != null) {
+              onDownloadAndInstall(downloadUrl)
+            } else {
+              // Fallback to github releases page
+              try {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/valiorsw/p5040/releases"))
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                context.startActivity(intent)
+              } catch (e: Exception) {
+                e.printStackTrace()
+              }
+            }
+          },
+          modifier = Modifier.fillMaxWidth(0.8f),
+          shape = MaterialTheme.shapes.medium
+        ) {
+          Text(
+            text = "دانلود و نصب آپدیت",
+            style = MaterialTheme.typography.titleMedium
+          )
+        }
+      }
+    }
+  }
 }
 
 
