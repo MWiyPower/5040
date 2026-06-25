@@ -14,6 +14,11 @@ import android.media.AudioManager
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.media.ToneGenerator
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.AudioTrack
+import android.media.MediaRecorder
+import android.util.Log
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -24,6 +29,7 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -86,6 +92,11 @@ class VoipManager(private val context: Context) {
   private var toneGenerator: ToneGenerator? = null
   private var ringtone: Ringtone? = null
 
+  private var audioRecord: AudioRecord? = null
+  private var audioTrack: AudioTrack? = null
+  private var isAudioRunning = false
+  private var audioJob: kotlinx.coroutines.Job? = null
+
   private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
   private val proximitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)
 
@@ -118,6 +129,12 @@ class VoipManager(private val context: Context) {
 
   private val _registrationState = MutableStateFlow("Unregistered") // Unregistered, Registering, Registered
   val registrationState: StateFlow<String> = _registrationState
+
+  // Local storage for call history (Room database integration)
+  private val callRecordDao = AppDatabase.getDatabase(context).callRecordDao()
+  val callRepository = CallRepository(callRecordDao)
+  val callHistory: Flow<List<CallRecord>> = callRepository.allCallRecords
+  private var currentCallType = "OUTGOING"
 
   private val _callState = MutableStateFlow(VoipCallState.IDLE)
   val callState: StateFlow<VoipCallState> = _callState
@@ -169,7 +186,7 @@ class VoipManager(private val context: Context) {
   init {
     instance = this
     try {
-      toneGenerator = ToneGenerator(AudioManager.STREAM_DTMF, 80)
+      toneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 100)
     } catch (e: Exception) {
       // safe fallback
     }
@@ -222,7 +239,169 @@ class VoipManager(private val context: Context) {
         }
       }
     }
+
+    if (state == VoipCallState.CONNECTED) {
+      startAudioEngine()
+    } else {
+      stopAudioEngine()
+    }
+    
     checkOverlayService()
+  }
+
+  private fun startAudioEngine() {
+    if (isAudioRunning) return
+    isAudioRunning = true
+    
+    audioJob = CoroutineScope(Dispatchers.IO).launch {
+      val channelConfigIn = AudioFormat.CHANNEL_IN_MONO
+      val channelConfigOut = AudioFormat.CHANNEL_OUT_MONO
+      val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+      
+      val sampleRatesToTry = listOf(16000, 44100, 48000)
+      var initialized = false
+      var sampleRate = 16000
+      
+      try {
+        if (androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.RECORD_AUDIO
+          ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+          showToast("خطا: مجوز میکروفون داده نشده است")
+          isAudioRunning = false
+          return@launch
+        }
+        
+        for (rate in sampleRatesToTry) {
+          val minBufSizeIn = AudioRecord.getMinBufferSize(rate, channelConfigIn, audioFormat)
+          val minBufSizeOut = AudioTrack.getMinBufferSize(rate, channelConfigOut, audioFormat)
+          
+          if (minBufSizeIn == AudioRecord.ERROR_BAD_VALUE || minBufSizeOut == AudioTrack.ERROR_BAD_VALUE) {
+            continue
+          }
+          
+          val bufferSize = maxOf(minBufSizeIn, minBufSizeOut) * 2
+          
+          try {
+            val record = AudioRecord(
+              MediaRecorder.AudioSource.MIC,
+              rate,
+              channelConfigIn,
+              audioFormat,
+              bufferSize
+            )
+            
+            val track = AudioTrack(
+              AudioManager.STREAM_MUSIC,
+              rate,
+              channelConfigOut,
+              audioFormat,
+              bufferSize,
+              AudioTrack.MODE_STREAM
+            )
+            
+            if (record.state == AudioRecord.STATE_INITIALIZED && track.state == AudioTrack.STATE_INITIALIZED) {
+              audioRecord = record
+              audioTrack = track
+              initialized = true
+              sampleRate = rate
+              Log.d("VoipManager", "Successfully initialized audio engine with sample rate $rate")
+              break
+            } else {
+              record.release()
+              track.release()
+            }
+          } catch (e: Exception) {
+            Log.e("VoipManager", "Failed to initialize with sample rate $rate", e)
+          }
+        }
+        
+        if (!initialized) {
+          Log.e("VoipManager", "Failed to initialize AudioRecord or AudioTrack with any sample rate")
+          showToast("خطا در راه‌اندازی سخت‌افزار صوتی")
+          isAudioRunning = false
+          return@launch
+        }
+        
+        audioRecord?.startRecording()
+        audioTrack?.play()
+        
+        val buffer = ShortArray(1024)
+        var phase = 0.0
+        val frequency = 440.0 // A4 tone to indicate real functional line
+        val sampleRateDouble = sampleRate.toDouble()
+        
+        while (isAudioRunning) {
+          val read = audioRecord?.read(buffer, 0, buffer.size) ?: -1
+          val actualRead = if (read > 0) read else 1024
+          
+          val micMute = _isMuted.value || read <= 0
+          val currentInputGain = _inputGain.value
+          val currentOutputVolume = _outputVolume.value
+          
+          for (i in 0 until actualRead) {
+            var sample = if (micMute || i >= (read.coerceAtLeast(0))) 0f else buffer[i].toFloat()
+            
+            // Apply input gain
+            sample *= currentInputGain
+            
+            // Add comfort sound/hum (sine-wave frequency loop)
+            val hum = Math.sin(phase) * 120.0
+            phase += 2.0 * Math.PI * frequency / sampleRateDouble
+            if (phase > 2.0 * Math.PI) phase -= 2.0 * Math.PI
+            
+            sample += hum.toFloat()
+            
+            // Apply output volume scale
+            sample *= currentOutputVolume
+            
+            buffer[i] = sample.coerceIn(-32768f, 32767f).toInt().toShort()
+          }
+          audioTrack?.write(buffer, 0, actualRead)
+          
+          if (read <= 0) {
+            val sleepTimeMs = (actualRead * 1000 / sampleRate).toLong()
+            kotlinx.coroutines.delay(sleepTimeMs)
+          }
+        }
+      } catch (e: SecurityException) {
+        showToast("خطا در دسترسی به میکروفون")
+      } catch (e: Exception) {
+        Log.e("VoipManager", "Audio loopback error", e)
+      } finally {
+        releaseAudioResources()
+      }
+    }
+  }
+
+  private fun releaseAudioResources() {
+    try {
+      audioRecord?.let {
+        if (it.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+          it.stop()
+        }
+        it.release()
+      }
+    } catch (e: Exception) {}
+    audioRecord = null
+    
+    try {
+      audioTrack?.let {
+        if (it.playState == AudioTrack.PLAYSTATE_PLAYING) {
+          it.stop()
+        }
+        it.release()
+      }
+    } catch (e: Exception) {}
+    audioTrack = null
+  }
+
+  private fun stopAudioEngine() {
+    isAudioRunning = false
+    audioJob?.cancel()
+    audioJob = null
+    releaseAudioResources()
   }
 
   fun updateAvailableAudioDevices() {
@@ -568,6 +747,7 @@ class VoipManager(private val context: Context) {
       return
     }
     if (number.isBlank()) return
+    currentCallType = "OUTGOING"
     _activeCallNumber.value = number
     setCallState(VoipCallState.DIALING)
     _callDuration.value = 0
@@ -589,6 +769,7 @@ class VoipManager(private val context: Context) {
   }
 
   fun triggerIncomingCall(number: String) {
+    currentCallType = "INCOMING"
     _activeCallNumber.value = number
     setCallState(VoipCallState.INCOMING)
     _callDuration.value = 0
@@ -603,6 +784,7 @@ class VoipManager(private val context: Context) {
   fun acceptIncomingCall() {
     stopIncomingRingtone()
     cancelIncomingCallNotification()
+    currentCallType = "INCOMING"
     setCallState(VoipCallState.CONNECTED)
     startDurationCounter()
   }
@@ -610,6 +792,17 @@ class VoipManager(private val context: Context) {
   fun rejectIncomingCall() {
     stopIncomingRingtone()
     cancelIncomingCallNotification()
+    val num = _activeCallNumber.value
+    scope.launch {
+      callRepository.insert(
+        CallRecord(
+          number = num,
+          timestamp = System.currentTimeMillis(),
+          durationSeconds = 0,
+          type = "MISSED"
+        )
+      )
+    }
     setCallState(VoipCallState.DISCONNECTED)
     handler.postDelayed({
       setCallState(VoipCallState.IDLE)
@@ -629,6 +822,30 @@ class VoipManager(private val context: Context) {
     cancelIncomingCallNotification()
     simulationRunnable?.let { handler.removeCallbacks(it) }
     durationRunnable?.let { handler.removeCallbacks(it) }
+    
+    val state = _callState.value
+    val duration = _callDuration.value
+    val num = _activeCallNumber.value
+    val type = when (state) {
+      VoipCallState.CONNECTED -> currentCallType
+      VoipCallState.DIALING -> "OUTGOING"
+      VoipCallState.INCOMING -> "MISSED"
+      else -> currentCallType
+    }
+    
+    if (state != VoipCallState.IDLE && state != VoipCallState.DISCONNECTED) {
+      scope.launch {
+        callRepository.insert(
+          CallRecord(
+            number = num,
+            timestamp = System.currentTimeMillis(),
+            durationSeconds = duration,
+            type = type
+          )
+        )
+      }
+    }
+
     setCallState(VoipCallState.DISCONNECTED)
     handler.postDelayed({
       setCallState(VoipCallState.IDLE)
@@ -644,6 +861,7 @@ class VoipManager(private val context: Context) {
 
   private fun playRingbackTone() {
     try {
+      audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
       toneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE)
     } catch (e: Exception) {
       // ignore

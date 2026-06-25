@@ -60,6 +60,8 @@ import androidx.compose.ui.window.DialogProperties
 import android.webkit.JavascriptInterface
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,11 +70,15 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
@@ -204,7 +210,8 @@ class MainActivity : ComponentActivity() {
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
       val neededPerms = mutableListOf(
-        android.Manifest.permission.READ_PHONE_STATE
+        android.Manifest.permission.READ_PHONE_STATE,
+        android.Manifest.permission.RECORD_AUDIO
       )
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
         neededPerms.add(android.Manifest.permission.READ_CALL_LOG)
@@ -2015,7 +2022,7 @@ private fun formatVoipDuration(seconds: Int): String {
   return String.format("%02d:%02d", m, s)
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun VoipDialog(
   voipManager: VoipManager,
@@ -2038,6 +2045,10 @@ fun VoipDialog(
 
   var dialedNumber by remember { mutableStateOf("") }
   var showAudioMenu by remember { mutableStateOf(false) }
+
+  val callHistory by voipManager.callHistory.collectAsState(initial = emptyList())
+  var selectedTab by remember { mutableStateOf(0) } // 0 = Dialer, 1 = History
+  val coroutineScope = rememberCoroutineScope()
 
   val hasOverlayPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
     Settings.canDrawOverlays(context)
@@ -2349,195 +2360,421 @@ fun VoipDialog(
       text = {
         Box(modifier = Modifier.width(340.dp).heightIn(max = 500.dp)) {
           Column(modifier = Modifier.fillMaxWidth()) {
-            if (!hasOverlayPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            TabRow(
+              selectedTabIndex = selectedTab,
+              modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+            ) {
+              Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = { Text("شماره‌گیر", style = MaterialTheme.typography.labelLarge) },
+                icon = { Icon(Icons.Filled.Call, contentDescription = null, modifier = Modifier.size(20.dp)) }
+              )
+              Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = { Text("تاریخچه", style = MaterialTheme.typography.labelLarge) },
+                icon = { Icon(Icons.Filled.Info, contentDescription = null, modifier = Modifier.size(20.dp)) }
+              )
+            }
+
+            if (selectedTab == 0) {
+              if (!hasOverlayPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Card(
+                  colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f)
+                  ),
+                  border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
+                  modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                ) {
+                  Column(
+                    modifier = Modifier.padding(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                  ) {
+                    Text(
+                      text = "⚠️ برای نمایش پاپ‌آپ تماس هنگام خروج از برنامه، نیاز به مجوز «نمایش روی سایر برنامه‌ها» است.",
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MaterialTheme.colorScheme.onErrorContainer,
+                      textAlign = TextAlign.Center
+                    )
+                    Button(
+                      onClick = {
+                        try {
+                          val intent = Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${context.packageName}")
+                          )
+                          context.startActivity(intent)
+                        } catch (e: Exception) {
+                          val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+                          context.startActivity(intent)
+                        }
+                      },
+                      colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                      ),
+                      modifier = Modifier.fillMaxWidth()
+                    ) {
+                      Text("فعال‌سازی مجوز", style = MaterialTheme.typography.labelMedium)
+                    }
+                  }
+                }
+              }
+
+              // Connection status banner
               Card(
                 colors = CardDefaults.cardColors(
-                  containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f)
+                  containerColor = when (registrationState) {
+                    "Registered" -> Color(0xFFE8F5E9)
+                    "Registering" -> Color(0xFFFFFDE7)
+                    "VpnConnecting" -> Color(0xFFEDE7F6)
+                    "Failed" -> Color(0xFFFFEBEE)
+                    else -> Color(0xFFECEFF1)
+                  }
                 ),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
-                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                modifier = Modifier.fillMaxWidth()
               ) {
-                Column(
-                  modifier = Modifier.padding(10.dp),
-                  horizontalAlignment = Alignment.CenterHorizontally,
-                  verticalArrangement = Arrangement.spacedBy(6.dp)
+                Row(
+                  modifier = Modifier.padding(8.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.Center
                 ) {
-                  Text(
-                    text = "⚠️ برای نمایش پاپ‌آپ تماس هنگام خروج از برنامه، نیاز به مجوز «نمایش روی سایر برنامه‌ها» است.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                    textAlign = TextAlign.Center
+                  Box(
+                    modifier = Modifier
+                      .size(8.dp)
+                      .background(
+                        color = when (registrationState) {
+                          "Registered" -> Color(0xFF4CAF50)
+                          "Registering" -> Color(0xFFFFEB3B)
+                          "VpnConnecting" -> Color(0xFF9C27B0)
+                          "Failed" -> Color(0xFFE53935)
+                          else -> Color(0xFF78909C)
+                        },
+                        shape = CircleShape
+                      )
                   )
+                  Spacer(modifier = Modifier.width(6.dp))
+                  Text(
+                    text = when (registrationState) {
+                      "Registered" -> "متصل به سرور SIP (${accountState.username})"
+                      "Registering" -> "در حال اتصال به سرور SIP..."
+                      "VpnConnecting" -> "در حال برقراری اتصال به VPN اختصاصی..."
+                      "Failed" -> "خطا در اتصال به سرور (تنظیمات SIP یا VPN را بررسی کنید)"
+                      else -> "آفلاین - نیاز به تنظیمات SIP"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = when (registrationState) {
+                      "Registered" -> Color(0xFF2E7D32)
+                      "Registering" -> Color(0xFFF57F17)
+                      "VpnConnecting" -> Color(0xFF6A1B9A)
+                      "Failed" -> Color(0xFFC62828)
+                      else -> Color(0xFF37474F)
+                    }
+                  )
+                }
+              }
+
+              Spacer(modifier = Modifier.height(16.dp))
+
+              CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Column(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                  verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                  // Display number being typed
+                  OutlinedTextField(
+                    value = dialedNumber,
+                    onValueChange = { dialedNumber = it },
+                    placeholder = { Text("شماره داخلی یا SIP URI") },
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .focusProperties { canFocus = false },
+                    singleLine = true,
+                    readOnly = true,
+                    textStyle = MaterialTheme.typography.headlineSmall.copy(textAlign = TextAlign.Center),
+                    trailingIcon = {
+                      if (dialedNumber.isNotEmpty()) {
+                        Box(
+                          modifier = Modifier
+                            .clip(CircleShape)
+                            .combinedClickable(
+                              onClick = {
+                                if (dialedNumber.isNotEmpty()) {
+                                  dialedNumber = dialedNumber.dropLast(1)
+                                }
+                              },
+                              onLongClick = {
+                                dialedNumber = ""
+                              }
+                            )
+                            .padding(12.dp)
+                        ) {
+                          Icon(Icons.Filled.ArrowBack, contentDescription = "حذف")
+                        }
+                      }
+                    }
+                  )
+
+                  // Grid of Numbers
+                  val keys = listOf(
+                    listOf("1", "2", "3"),
+                    listOf("4", "5", "6"),
+                    listOf("7", "8", "9"),
+                    listOf("*", "0", "#")
+                  )
+
+                  Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                  ) {
+                    keys.forEach { rowKeys ->
+                      Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                      ) {
+                        rowKeys.forEach { key ->
+                          Button(
+                            onClick = {
+                              dialedNumber += key
+                              voipManager.playDtmf(key[0])
+                            },
+                            modifier = Modifier
+                              .weight(1f)
+                              .height(52.dp),
+                            colors = ButtonDefaults.buttonColors(
+                              containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                              contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                          ) {
+                            Text(
+                              text = key,
+                              style = MaterialTheme.typography.titleLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                            )
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  Spacer(modifier = Modifier.height(8.dp))
+
+                  // Call Button
                   Button(
                     onClick = {
-                      try {
-                        val intent = Intent(
-                          Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                          Uri.parse("package:${context.packageName}")
-                        )
-                        context.startActivity(intent)
-                      } catch (e: Exception) {
-                        val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
-                        context.startActivity(intent)
+                      if (dialedNumber.isBlank()) {
+                        Toast.makeText(context, "لطفا شماره یا آدرس SIP را وارد کنید", Toast.LENGTH_SHORT).show()
+                      } else {
+                        voipManager.startCall(dialedNumber)
                       }
                     },
+                    enabled = registrationState == "Registered",
+                    modifier = Modifier
+                      .size(64.dp),
                     colors = ButtonDefaults.buttonColors(
-                      containerColor = MaterialTheme.colorScheme.error
+                      containerColor = Color(0xFF4CAF50),
+                      contentColor = Color.White,
+                      disabledContainerColor = Color(0xFFE0E0E0),
+                      disabledContentColor = Color(0xFF9E9E9E)
                     ),
-                    modifier = Modifier.fillMaxWidth()
+                    shape = CircleShape,
+                    contentPadding = PaddingValues(0.dp)
                   ) {
-                    Text("فعال‌سازی مجوز", style = MaterialTheme.typography.labelMedium)
-                  }
-                }
-              }
-            }
-
-            // Connection status banner
-            Card(
-              colors = CardDefaults.cardColors(
-                containerColor = when (registrationState) {
-                  "Registered" -> Color(0xFFE8F5E9)
-                  "Registering" -> Color(0xFFFFFDE7)
-                  "VpnConnecting" -> Color(0xFFEDE7F6)
-                  "Failed" -> Color(0xFFFFEBEE)
-                  else -> Color(0xFFECEFF1)
-                }
-              ),
-              modifier = Modifier.fillMaxWidth()
-            ) {
-              Row(
-                modifier = Modifier.padding(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-              ) {
-                Box(
-                  modifier = Modifier
-                    .size(8.dp)
-                    .background(
-                      color = when (registrationState) {
-                        "Registered" -> Color(0xFF4CAF50)
-                        "Registering" -> Color(0xFFFFEB3B)
-                        "VpnConnecting" -> Color(0xFF9C27B0)
-                        "Failed" -> Color(0xFFE53935)
-                        else -> Color(0xFF78909C)
-                      },
-                      shape = CircleShape
+                    Icon(
+                      imageVector = Icons.Filled.Call,
+                      contentDescription = "برقراری تماس",
+                      modifier = Modifier.size(32.dp)
                     )
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                  text = when (registrationState) {
-                    "Registered" -> "متصل به سرور SIP (${accountState.username})"
-                    "Registering" -> "در حال اتصال به سرور SIP..."
-                    "VpnConnecting" -> "در حال برقراری اتصال به VPN اختصاصی..."
-                    "Failed" -> "خطا در اتصال به سرور (تنظیمات SIP یا VPN را بررسی کنید)"
-                    else -> "آفلاین - نیاز به تنظیمات SIP"
-                  },
-                  style = MaterialTheme.typography.bodySmall,
-                  color = when (registrationState) {
-                    "Registered" -> Color(0xFF2E7D32)
-                    "Registering" -> Color(0xFFF57F17)
-                    "VpnConnecting" -> Color(0xFF6A1B9A)
-                    "Failed" -> Color(0xFFC62828)
-                    else -> Color(0xFF37474F)
-                  }
-                )
-              }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Column(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalAlignment = Alignment.CenterHorizontally,
-              verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-              // Display number being typed
-              OutlinedTextField(
-                value = dialedNumber,
-                onValueChange = { dialedNumber = it },
-                placeholder = { Text("شماره داخلی یا SIP URI") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                textStyle = MaterialTheme.typography.headlineSmall.copy(textAlign = TextAlign.Center),
-                trailingIcon = {
-                  if (dialedNumber.isNotEmpty()) {
-                    IconButton(onClick = { dialedNumber = dialedNumber.dropLast(1) }) {
-                      Icon(Icons.Filled.ArrowBack, contentDescription = "حذف")
-                    }
                   }
                 }
-              )
-
-              // Grid of Numbers
-              val keys = listOf(
-                listOf("1", "2", "3"),
-                listOf("4", "5", "6"),
-                listOf("7", "8", "9"),
-                listOf("*", "0", "#")
-              )
-
-              Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-              ) {
-                keys.forEach { rowKeys ->
-                  Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                  ) {
-                    rowKeys.forEach { key ->
-                      Button(
-                        onClick = {
-                          dialedNumber += key
-                          voipManager.playDtmf(key[0])
-                        },
-                        modifier = Modifier
-                          .weight(1f)
-                          .height(52.dp),
-                        colors = ButtonDefaults.buttonColors(
-                          containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                          contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+              }
+            } else {
+              // Call History Tab
+              Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                  modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Text(
+                    text = "تماس‌های اخیر",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                  )
+                  if (callHistory.isNotEmpty()) {
+                    TextButton(
+                      onClick = {
+                        coroutineScope.launch {
+                          voipManager.callRepository.clearHistory()
+                        }
+                      },
+                      colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) {
+                      Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                       ) {
-                        Text(
-                          text = key,
-                          style = MaterialTheme.typography.titleLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-                        )
+                        Icon(Icons.Filled.Delete, contentDescription = "پاک کردن", modifier = Modifier.size(16.dp))
+                        Text("پاک کردن تاریخچه", style = MaterialTheme.typography.labelMedium)
                       }
                     }
                   }
                 }
-              }
 
-              Spacer(modifier = Modifier.height(8.dp))
-
-              // Call Button
-              Button(
-                onClick = {
-                  if (dialedNumber.isBlank()) {
-                    Toast.makeText(context, "لطفا شماره یا آدرس SIP را وارد کنید", Toast.LENGTH_SHORT).show()
-                  } else {
-                    voipManager.startCall(dialedNumber)
+                if (callHistory.isEmpty()) {
+                  Box(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .height(250.dp),
+                    contentAlignment = Alignment.Center
+                  ) {
+                    Column(
+                      horizontalAlignment = Alignment.CenterHorizontally,
+                      verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                      Icon(
+                        imageVector = Icons.Filled.Info,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                        modifier = Modifier.size(48.dp)
+                      )
+                      Text(
+                        text = "هیچ تماسی یافت نشد",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                      )
+                    }
                   }
-                },
-                enabled = registrationState == "Registered",
-                modifier = Modifier
-                  .size(64.dp),
-                colors = ButtonDefaults.buttonColors(
-                  containerColor = Color(0xFF4CAF50),
-                  contentColor = Color.White,
-                  disabledContainerColor = Color(0xFFE0E0E0),
-                  disabledContentColor = Color(0xFF9E9E9E)
-                ),
-                shape = CircleShape,
-                contentPadding = PaddingValues(0.dp)
-              ) {
-                Icon(
-                  imageVector = Icons.Filled.Call,
-                  contentDescription = "برقراری تماس",
-                  modifier = Modifier.size(32.dp)
-                )
+                } else {
+                  androidx.compose.foundation.lazy.LazyColumn(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .heightIn(max = 350.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                  ) {
+                    items(callHistory) { record ->
+                      Row(
+                        modifier = Modifier
+                          .fillMaxWidth()
+                          .clickable {
+                            dialedNumber = record.number
+                            selectedTab = 0
+                          }
+                          .padding(vertical = 8.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                      ) {
+                        Row(
+                          verticalAlignment = Alignment.CenterVertically,
+                          horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                          Box(
+                            modifier = Modifier
+                              .size(40.dp)
+                              .background(
+                                color = when (record.type) {
+                                  "OUTGOING" -> Color(0xFFE3F2FD)
+                                  "INCOMING" -> Color(0xFFE8F5E9)
+                                  else -> Color(0xFFFFEBEE)
+                                },
+                                shape = CircleShape
+                              ),
+                            contentAlignment = Alignment.Center
+                          ) {
+                            Icon(
+                              imageVector = Icons.Filled.Call,
+                              contentDescription = null,
+                              tint = when (record.type) {
+                                "OUTGOING" -> Color(0xFF1976D2)
+                                "INCOMING" -> Color(0xFF388E3C)
+                                else -> Color(0xFFD32F2F)
+                              },
+                              modifier = Modifier.size(20.dp)
+                            )
+                          }
+
+                          Column {
+                            Text(
+                              text = record.number,
+                              style = MaterialTheme.typography.bodyMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                              color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Row(
+                              verticalAlignment = Alignment.CenterVertically,
+                              horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                              Text(
+                                text = when (record.type) {
+                                  "OUTGOING" -> "خروجی"
+                                  "INCOMING" -> "ورودی"
+                                  else -> "بی‌پاسخ"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = when (record.type) {
+                                  "OUTGOING" -> Color(0xFF1976D2)
+                                  "INCOMING" -> Color(0xFF388E3C)
+                                  else -> Color(0xFFD32F2F)
+                                }
+                              )
+                              Text(
+                                text = "•",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                              )
+                              Text(
+                                text = formatVoipDuration(record.durationSeconds),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                            }
+                          }
+                        }
+
+                        Column(
+                          horizontalAlignment = Alignment.End
+                        ) {
+                          val dateString = remember(record.timestamp) {
+                            try {
+                              val now = System.currentTimeMillis()
+                              val diff = now - record.timestamp
+                              val sdfTime = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                              val timeStr = sdfTime.format(java.util.Date(record.timestamp))
+                              if (diff < 24 * 60 * 60 * 1000L) {
+                                timeStr
+                              } else {
+                                val sdfDate = java.text.SimpleDateFormat("MM/dd", java.util.Locale.getDefault())
+                                sdfDate.format(java.util.Date(record.timestamp)) + " " + timeStr
+                              }
+                            } catch (e: Exception) {
+                              ""
+                            }
+                          }
+                          Text(
+                            text = dateString,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
+                          Spacer(modifier = Modifier.height(4.dp))
+                          IconButton(
+                            onClick = {
+                              voipManager.startCall(record.number)
+                            },
+                            modifier = Modifier.size(24.dp)
+                          ) {
+                            Icon(
+                              imageVector = Icons.Filled.Call,
+                              contentDescription = "تماس مجدد",
+                              tint = Color(0xFF4CAF50),
+                              modifier = Modifier.size(16.dp)
+                            )
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           }
