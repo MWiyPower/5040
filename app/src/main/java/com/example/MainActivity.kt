@@ -155,6 +155,44 @@ private const val JS_NOTIFICATION_AND_THEME = "javascript:(function() { " +
     "} catch(e) {} " +
     "})();"
 
+private const val JS_PERSIST_SESSION = "javascript:(function() { " +
+    "try { " +
+    "  for (var i = 0; i < localStorage.length; i++) { " +
+    "    var key = localStorage.key(i); " +
+    "    if (key && key.indexOf('_ss_backup_') === 0) { " +
+    "      var origKey = key.substring(11); " +
+    "      if (!sessionStorage.getItem(origKey)) { " +
+    "        sessionStorage.setItem(origKey, localStorage.getItem(key)); " +
+    "      } " +
+    "    } " +
+    "  } " +
+    "} catch(e) {} " +
+    "try { " +
+    "  var orgSet = sessionStorage.setItem; " +
+    "  sessionStorage.setItem = function(k, v) { " +
+    "    orgSet.apply(this, arguments); " +
+    "    try { localStorage.setItem('_ss_backup_' + k, v); } catch(e) {} " +
+    "  }; " +
+    "  var orgRem = sessionStorage.removeItem; " +
+    "  sessionStorage.removeItem = function(k) { " +
+    "    orgRem.apply(this, arguments); " +
+    "    try { localStorage.removeItem('_ss_backup_' + k); } catch(e) {} " +
+    "  }; " +
+    "  var orgClr = sessionStorage.clear; " +
+    "  sessionStorage.clear = function() { " +
+    "    orgClr.apply(this, arguments); " +
+    "    try { " +
+    "      var toDel = []; " +
+    "      for (var i = 0; i < localStorage.length; i++) { " +
+    "        var k = localStorage.key(i); " +
+    "        if (k && k.indexOf('_ss_backup_') === 0) { toDel.push(k); } " +
+    "      } " +
+    "      for (var j = 0; j < toDel.length; j++) { localStorage.removeItem(toDel[j]); } " +
+    "    } catch(e) {} " +
+    "  }; " +
+    "} catch(e) {} " +
+    "})();"
+
 class MainActivity : ComponentActivity() {
 
   private var filePathCallback: ValueCallback<Array<Uri>>? = null
@@ -329,6 +367,11 @@ class MainActivity : ComponentActivity() {
       simCallReceiver?.let {
         unregisterReceiver(it)
       }
+    } catch (e: Exception) {
+      e.printStackTrace()
+    }
+    try {
+      android.webkit.CookieManager.getInstance().flush()
     } catch (e: Exception) {
       e.printStackTrace()
     }
@@ -509,20 +552,47 @@ fun MainScreen(
   var chatWebViewRef by remember { mutableStateOf<WebView?>(null) }
 
   val coroutineScope = rememberCoroutineScope()
-  var updateInfoState by remember { mutableStateOf<UpdateInfo?>(null) }
-  var isDownloadingUpdate by remember { mutableStateOf(false) }
-  var downloadProgressUpdate by remember { mutableStateOf(0f) }
+  var appUpdateState by remember { mutableStateOf<AppUpdateState>(AppUpdateState.Idle) }
 
   LaunchedEffect(Unit) {
     try {
-      val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-      val currentVersion = packageInfo.versionName ?: "1.0.0"
-      val info = checkForUpdates(currentVersion)
-      if (info.hasUpdate) {
-        updateInfoState = info
+      val sharedPrefs = context.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
+      val lastTime = sharedPrefs.getLong("last_launch_time", 0L)
+      val currentTime = System.currentTimeMillis()
+      
+      if (currentTime - lastTime >= 7200000L) {
+        appUpdateState = AppUpdateState.CheckingConfig
+        sharedPrefs.edit().putLong("last_launch_time", currentTime).apply()
+        
+        val config = fetchConfigs()
+        if (config != null && config.update) {
+          val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+          val currentVersion = packageInfo.versionName ?: "1.0.0"
+          
+          if (isVersionOlder(currentVersion, config.updateVersion)) {
+            appUpdateState = AppUpdateState.Downloading(0L, 0L)
+            
+            val apkFile = downloadApk(context, config.updateUrl) { downloaded, total ->
+              appUpdateState = AppUpdateState.Downloading(downloaded, total)
+            }
+            
+            if (apkFile != null) {
+              installApk(context, apkFile)
+            } else {
+              appUpdateState = AppUpdateState.Idle
+            }
+          } else {
+            appUpdateState = AppUpdateState.Idle
+          }
+        } else {
+          appUpdateState = AppUpdateState.Idle
+        }
+      } else {
+        appUpdateState = AppUpdateState.Idle
       }
     } catch (e: Exception) {
       e.printStackTrace()
+      appUpdateState = AppUpdateState.Idle
     }
   }
 
@@ -617,10 +687,16 @@ fun MainScreen(
       ), "AndroidApp")
       
       webViewClient = object : WebViewClient() {
+        override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+          super.onPageStarted(view, url, favicon)
+          view?.loadUrl(JS_PERSIST_SESSION)
+        }
+
         override fun onPageFinished(view: WebView?, url: String?) {
           super.onPageFinished(view, url)
           isMainLoaded = true
           CookieManager.getInstance().flush()
+          view?.loadUrl(JS_PERSIST_SESSION)
           view?.loadUrl(JS_BYPASS_WARNINGS)
           view?.loadUrl(JS_NOTIFICATION_AND_THEME)
         }
@@ -751,10 +827,16 @@ fun MainScreen(
       ), "AndroidApp")
       
       webViewClient = object : WebViewClient() {
+        override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+          super.onPageStarted(view, url, favicon)
+          view?.loadUrl(JS_PERSIST_SESSION)
+        }
+
         override fun onPageFinished(view: WebView?, url: String?) {
           super.onPageFinished(view, url)
           isChatLoaded = true
           CookieManager.getInstance().flush()
+          view?.loadUrl(JS_PERSIST_SESSION)
           view?.loadUrl(JS_BYPASS_WARNINGS)
           view?.loadUrl(JS_NOTIFICATION_AND_THEME)
         }
@@ -879,35 +961,22 @@ fun MainScreen(
     modifier = Modifier
       .fillMaxSize()
   ) {
-    val info = updateInfoState
-    if (info != null) {
-      UpdateBlockScreen(
-        latestVersion = info.latestVersion,
-        releaseNotes = info.releaseNotes,
-        downloadUrl = info.downloadUrl,
-        onDownloadAndInstall = { url ->
-          isDownloadingUpdate = true
-          coroutineScope.launch {
-            val apkFile = downloadApk(context, url) { progress ->
-              downloadProgressUpdate = progress
-            }
-            isDownloadingUpdate = false
-            if (apkFile != null) {
-              installApk(context, apkFile)
-            } else {
-              Toast.makeText(context, "خطا در دانلود فایل بروزرسانی", Toast.LENGTH_LONG).show()
-            }
-          }
-        },
-        isDownloading = isDownloadingUpdate,
-        downloadProgress = downloadProgressUpdate
-      )
-    } else {
-      Box(
-        modifier = Modifier
-          .fillMaxSize()
-          .systemBarsPadding()
-      ) {
+    when (val state = appUpdateState) {
+      is AppUpdateState.CheckingConfig -> {
+        SplashLoadingScreen()
+      }
+      is AppUpdateState.Downloading -> {
+        UpdateProgressScreen(
+          downloadedBytes = state.downloadedBytes,
+          totalBytes = state.totalBytes
+        )
+      }
+      is AppUpdateState.Idle -> {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .systemBarsPadding()
+        ) {
     if (isOfflineOrError) {
       Box(
         modifier = Modifier
@@ -1370,6 +1439,7 @@ fun MainScreen(
           }
         )
       }
+    }
     }
     }
     }
@@ -3157,14 +3227,19 @@ fun SettingsDialog(
   )
 }
 
-data class UpdateInfo(
-  val hasUpdate: Boolean,
-  val latestVersion: String,
-  val downloadUrl: String?,
-  val releaseNotes: String?
+data class ConfigData(
+  val update: Boolean,
+  val updateVersion: String,
+  val updateUrl: String
 )
 
-fun isNewerVersion(current: String, latest: String): Boolean {
+sealed interface AppUpdateState {
+  object Idle : AppUpdateState
+  object CheckingConfig : AppUpdateState
+  data class Downloading(val downloadedBytes: Long, val totalBytes: Long) : AppUpdateState
+}
+
+fun isVersionOlder(current: String, latest: String): Boolean {
   val cleanCurr = current.replace("v", "").replace("V", "").trim()
   val cleanLat = latest.replace("v", "").replace("V", "").trim()
   val currParts = cleanCurr.split(".").map { it.toIntOrNull() ?: 0 }
@@ -3178,47 +3253,43 @@ fun isNewerVersion(current: String, latest: String): Boolean {
   return false
 }
 
-suspend fun checkForUpdates(currentVersion: String): UpdateInfo = withContext(Dispatchers.IO) {
+suspend fun fetchConfigs(): ConfigData? = withContext(Dispatchers.IO) {
   try {
-    val url = URL("https://api.github.com/repos/valiorsw/p5040/releases/latest")
+    var configUrl = "https://github.com/MWiyPower/5040DB/blob/main/configs.ini"
+    if (configUrl.contains("github.com") && configUrl.contains("/blob/")) {
+      configUrl = configUrl.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
+    }
+    val url = URL(configUrl)
     val conn = url.openConnection() as HttpURLConnection
-    conn.requestMethod = "GET"
-    conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
-    conn.setRequestProperty("User-Agent", "Mozilla/5.0")
     conn.connectTimeout = 8000
     conn.readTimeout = 8000
+    conn.requestMethod = "GET"
+    conn.setRequestProperty("User-Agent", "Mozilla/5.0")
     
     if (conn.responseCode == 200) {
-      val response = conn.inputStream.bufferedReader().use { it.readText() }
-      val json = JSONObject(response)
-      val latestTagName = json.optString("tag_name", "").trim()
-      val body = json.optString("body", "")
+      val text = conn.inputStream.bufferedReader().use { it.readText() }
       
-      var downloadUrl: String? = null
-      val assets = json.optJSONArray("assets")
-      if (assets != null) {
-        for (i in 0 until assets.length()) {
-          val asset = assets.getJSONObject(i)
-          val name = asset.optString("name", "")
-          if (name.endsWith(".apk")) {
-            downloadUrl = asset.optString("browser_download_url")
-            break
-          }
-        }
-      }
+      val updateMatch = """AU_Update\s*=\s*"([^"]*)"""".toRegex().find(text)
+      val versionMatch = """AU_UpdateVersion\s*=\s*"([^"]*)"""".toRegex().find(text)
+      val urlMatch = """AU_UpdateURL\s*=\s*"([^"]*)"""".toRegex().find(text)
       
-      if (latestTagName.isNotEmpty()) {
-        val hasUpdate = isNewerVersion(currentVersion, latestTagName)
-        return@withContext UpdateInfo(hasUpdate, latestTagName, downloadUrl, body)
-      }
+      val update = updateMatch?.groupValues?.getOrNull(1)?.trim()?.lowercase() == "true"
+      val version = versionMatch?.groupValues?.getOrNull(1)?.trim() ?: "1.0.0"
+      val updateUrl = urlMatch?.groupValues?.getOrNull(1)?.trim() ?: ""
+      
+      return@withContext ConfigData(update, version, updateUrl)
     }
   } catch (e: Exception) {
     e.printStackTrace()
   }
-  return@withContext UpdateInfo(false, currentVersion, null, null)
+  return@withContext null
 }
 
-suspend fun downloadApk(context: Context, downloadUrl: String, onProgress: (Float) -> Unit): File? = withContext(Dispatchers.IO) {
+suspend fun downloadApk(
+  context: Context, 
+  downloadUrl: String, 
+  onProgress: (Long, Long) -> Unit
+): File? = withContext(Dispatchers.IO) {
   try {
     val url = URL(downloadUrl)
     val conn = url.openConnection() as HttpURLConnection
@@ -3226,7 +3297,7 @@ suspend fun downloadApk(context: Context, downloadUrl: String, onProgress: (Floa
     conn.readTimeout = 15000
     conn.connect()
     
-    val lengthOfFile = conn.contentLength
+    val lengthOfFile = conn.contentLength.toLong()
     val input = conn.inputStream
     
     val apkFile = File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS), "update.apk")
@@ -3240,9 +3311,7 @@ suspend fun downloadApk(context: Context, downloadUrl: String, onProgress: (Floa
     var count: Int
     while (input.read(data).also { count = it } != -1) {
       total += count
-      if (lengthOfFile > 0) {
-        onProgress(total.toFloat() / lengthOfFile.toFloat())
-      }
+      onProgress(total, lengthOfFile)
       output.write(data, 0, count)
     }
     output.flush()
@@ -3288,118 +3357,115 @@ fun installApk(context: Context, apkFile: File) {
 }
 
 @Composable
-fun UpdateBlockScreen(
-  latestVersion: String,
-  releaseNotes: String?,
-  downloadUrl: String?,
-  onDownloadAndInstall: (String) -> Unit,
-  isDownloading: Boolean,
-  downloadProgress: Float
-) {
-  val context = LocalContext.current
+fun SplashLoadingScreen() {
   Box(
     modifier = Modifier
       .fillMaxSize()
-      .background(MaterialTheme.colorScheme.background)
-      .padding(24.dp),
+      .background(androidx.compose.ui.graphics.Color(0xFF0F0F12)),
+    contentAlignment = Alignment.Center
+  ) {
+    Card(
+      shape = RoundedCornerShape(24.dp),
+      colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color(0xFF1E1E24)),
+      elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
+      modifier = Modifier
+        .padding(32.dp)
+        .widthIn(max = 300.dp)
+    ) {
+      Column(
+        modifier = Modifier.padding(28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+      ) {
+        CircularProgressIndicator(
+          color = androidx.compose.ui.graphics.Color(0xFF007AFF),
+          strokeWidth = 4.dp,
+          modifier = Modifier.size(54.dp)
+        )
+        Spacer(modifier = Modifier.height(20.dp))
+        Text(
+          text = "در حال دریافت تنظیمات",
+          style = MaterialTheme.typography.titleMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+          color = androidx.compose.ui.graphics.Color.White,
+          textAlign = TextAlign.Center
+        )
+      }
+    }
+  }
+}
+
+@Composable
+fun UpdateProgressScreen(
+  downloadedBytes: Long,
+  totalBytes: Long
+) {
+  val progress = if (totalBytes > 0) downloadedBytes.toFloat() / totalBytes else 0f
+  val downloadedMb = downloadedBytes.toFloat() / (1024 * 1024)
+  val totalMb = totalBytes.toFloat() / (1024 * 1024)
+  
+  val progressText = if (totalBytes > 0) {
+    String.format(java.util.Locale.US, "%.2fMB / %.2fMB", downloadedMb, totalMb)
+  } else {
+    String.format(java.util.Locale.US, "%.2fMB / --MB", downloadedMb)
+  }
+  
+  val percentageText = "${(progress * 100).toInt()}%"
+
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .background(
+        androidx.compose.ui.graphics.Brush.verticalGradient(
+          colors = listOf(
+            androidx.compose.ui.graphics.Color(0xFF0D6EFD), 
+            androidx.compose.ui.graphics.Color(0xFF0A58CA)
+          )
+        )
+      ),
     contentAlignment = Alignment.Center
   ) {
     Column(
       horizontalAlignment = Alignment.CenterHorizontally,
       verticalArrangement = Arrangement.Center,
-      modifier = Modifier.fillMaxWidth()
+      modifier = Modifier.padding(24.dp)
     ) {
-      Icon(
-        imageVector = Icons.Filled.Info,
-        contentDescription = "بروزرسانی جدید",
-        tint = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.size(72.dp)
-      )
-      
-      Spacer(modifier = Modifier.height(24.dp))
-      
       Text(
-        text = "بروزرسانی اجباری برنامه",
-        style = MaterialTheme.typography.headlineMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
-        color = MaterialTheme.colorScheme.onBackground,
+        text = "در حال دریافت بروزرسانی جدید",
+        style = MaterialTheme.typography.titleLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+        color = androidx.compose.ui.graphics.Color.White,
         textAlign = TextAlign.Center
       )
       
-      Spacer(modifier = Modifier.height(12.dp))
+      Spacer(modifier = Modifier.height(48.dp))
       
-      Text(
-        text = "نسخه جدید برنامه ($latestVersion) در دسترس است. برای ادامه استفاده از خدمات، حتماً باید برنامه را آپدیت کنید.",
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
-        textAlign = TextAlign.Center,
-        modifier = Modifier.padding(horizontal = 16.dp)
-      )
-      
-      if (!releaseNotes.isNullOrEmpty()) {
-        Spacer(modifier = Modifier.height(16.dp))
-        Card(
-          colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
-          modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
-        ) {
-          Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-              text = "تغییرات نسخه جدید:",
-              style = MaterialTheme.typography.titleSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
-              color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-              text = releaseNotes,
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-            )
-          }
-        }
+      Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier.size(160.dp)
+      ) {
+        CircularProgressIndicator(
+          progress = progress,
+          color = androidx.compose.ui.graphics.Color.White,
+          trackColor = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.2f),
+          strokeWidth = 8.dp,
+          modifier = Modifier.fillMaxSize()
+        )
+        Text(
+          text = percentageText,
+          style = MaterialTheme.typography.headlineMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+          color = androidx.compose.ui.graphics.Color.White
+        )
       }
       
       Spacer(modifier = Modifier.height(32.dp))
       
-      if (isDownloading) {
-        Column(
-          horizontalAlignment = Alignment.CenterHorizontally,
-          modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp)
-        ) {
-          LinearProgressIndicator(
-            progress = downloadProgress,
-            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp))
-          )
-          Spacer(modifier = Modifier.height(8.dp))
-          Text(
-            text = "در حال دانلود: ${(downloadProgress * 100).toInt()}%",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.primary
-          )
-        }
-      } else {
-        Button(
-          onClick = {
-            if (downloadUrl != null) {
-              onDownloadAndInstall(downloadUrl)
-            } else {
-              // Fallback to github releases page
-              try {
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/valiorsw/p5040/releases"))
-                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                context.startActivity(intent)
-              } catch (e: Exception) {
-                e.printStackTrace()
-              }
-            }
-          },
-          modifier = Modifier.fillMaxWidth(0.8f),
-          shape = MaterialTheme.shapes.medium
-        ) {
-          Text(
-            text = "دانلود و نصب آپدیت",
-            style = MaterialTheme.typography.titleMedium
-          )
-        }
-      }
+      Text(
+        text = progressText,
+        style = MaterialTheme.typography.titleMedium.copy(
+          fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+          fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+        ),
+        color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.9f)
+      )
     }
   }
 }
