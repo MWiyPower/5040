@@ -20,6 +20,9 @@ import android.webkit.*
 import android.widget.Toast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.net.HttpURLConnection
 import java.net.URL
 import org.json.JSONObject
@@ -255,22 +258,6 @@ class MainActivity : ComponentActivity() {
     super.onCreate(savedInstanceState)
     voipManager = VoipManager(applicationContext)
     handleVoipIntent(intent)
-
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-      val neededPerms = mutableListOf(
-        android.Manifest.permission.READ_PHONE_STATE,
-        android.Manifest.permission.RECORD_AUDIO,
-        android.Manifest.permission.RECEIVE_SMS
-      )
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-        neededPerms.add(android.Manifest.permission.READ_CALL_LOG)
-        neededPerms.add(android.Manifest.permission.ANSWER_PHONE_CALLS)
-      }
-      val toRequest = neededPerms.filter { checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED }
-      if (toRequest.isNotEmpty()) {
-        requestPermissions(toRequest.toTypedArray(), 1234)
-      }
-    }
 
     enableEdgeToEdge()
     setContent {
@@ -552,17 +539,102 @@ fun MainScreen(
   var chatWebViewRef by remember { mutableStateOf<WebView?>(null) }
 
   val coroutineScope = rememberCoroutineScope()
-  var appUpdateState by remember { mutableStateOf<AppUpdateState>(AppUpdateState.Idle) }
+  var appUpdateState by remember { mutableStateOf<AppUpdateState>(AppUpdateState.CheckingConfig) }
+
+  val startupPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.RequestMultiplePermissions()
+  ) { permissionsMap ->
+    coroutineScope.launch {
+      try {
+        appUpdateState = AppUpdateState.CheckingConfig
+        val config = fetchConfigs()
+        if (config != null && config.update) {
+          val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+          val currentVersion = packageInfo.versionName ?: "1.0.0"
+          
+          if (isVersionOlder(currentVersion, config.updateVersion)) {
+            appUpdateState = AppUpdateState.Downloading(0L, 0L)
+            
+            val apkFile = downloadApk(context, config.updateUrl) { downloaded, total ->
+              appUpdateState = AppUpdateState.Downloading(downloaded, total)
+            }
+            
+            if (apkFile != null) {
+              appUpdateState = AppUpdateState.ReadyToInstall(apkFile)
+              installApk(context, apkFile)
+            } else {
+              appUpdateState = AppUpdateState.Idle
+            }
+          } else {
+            appUpdateState = AppUpdateState.Idle
+          }
+        } else {
+          appUpdateState = AppUpdateState.Idle
+        }
+      } catch (e: Exception) {
+        e.printStackTrace()
+        appUpdateState = AppUpdateState.Idle
+      }
+    }
+  }
+
+  val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+  DisposableEffect(lifecycleOwner, appUpdateState) {
+    val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+      if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+        val state = appUpdateState
+        if (state is AppUpdateState.ReadyToInstall) {
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (context.packageManager.canRequestPackageInstalls()) {
+              installApk(context, state.apkFile)
+            }
+          } else {
+            installApk(context, state.apkFile)
+          }
+        }
+      }
+    }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose {
+      lifecycleOwner.lifecycle.removeObserver(observer)
+    }
+  }
 
   LaunchedEffect(Unit) {
     try {
-      val sharedPrefs = context.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
-      val lastTime = sharedPrefs.getLong("last_launch_time", 0L)
-      val currentTime = System.currentTimeMillis()
+      // Background loop to periodically flush cookies so they persist across updates/kills
+      coroutineScope.launch {
+        while (isActive) {
+          try {
+            android.webkit.CookieManager.getInstance().flush()
+          } catch (e: Exception) {
+            e.printStackTrace()
+          }
+          delay(5000)
+        }
+      }
+
+      val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        listOf(
+          android.Manifest.permission.READ_PHONE_STATE,
+          android.Manifest.permission.RECORD_AUDIO,
+          android.Manifest.permission.RECEIVE_SMS,
+          android.Manifest.permission.READ_CALL_LOG,
+          android.Manifest.permission.ANSWER_PHONE_CALLS
+        )
+      } else {
+        listOf(
+          android.Manifest.permission.READ_PHONE_STATE,
+          android.Manifest.permission.RECORD_AUDIO,
+          android.Manifest.permission.RECEIVE_SMS
+        )
+      }
+      val missing = needed.filter { androidx.core.content.ContextCompat.checkSelfPermission(context, it) != android.content.pm.PackageManager.PERMISSION_GRANTED }
       
-      if (currentTime - lastTime >= 7200000L) {
+      if (missing.isNotEmpty()) {
+        appUpdateState = AppUpdateState.PermissionsRequired
+      } else {
         appUpdateState = AppUpdateState.CheckingConfig
-        sharedPrefs.edit().putLong("last_launch_time", currentTime).apply()
         
         val config = fetchConfigs()
         if (config != null && config.update) {
@@ -577,6 +649,7 @@ fun MainScreen(
             }
             
             if (apkFile != null) {
+              appUpdateState = AppUpdateState.ReadyToInstall(apkFile)
               installApk(context, apkFile)
             } else {
               appUpdateState = AppUpdateState.Idle
@@ -587,8 +660,6 @@ fun MainScreen(
         } else {
           appUpdateState = AppUpdateState.Idle
         }
-      } else {
-        appUpdateState = AppUpdateState.Idle
       }
     } catch (e: Exception) {
       e.printStackTrace()
@@ -962,6 +1033,28 @@ fun MainScreen(
       .fillMaxSize()
   ) {
     when (val state = appUpdateState) {
+      is AppUpdateState.PermissionsRequired -> {
+        PermissionsRequiredScreen(
+          onGrantClick = {
+            val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+              listOf(
+                android.Manifest.permission.READ_PHONE_STATE,
+                android.Manifest.permission.RECORD_AUDIO,
+                android.Manifest.permission.RECEIVE_SMS,
+                android.Manifest.permission.READ_CALL_LOG,
+                android.Manifest.permission.ANSWER_PHONE_CALLS
+              )
+            } else {
+              listOf(
+                android.Manifest.permission.READ_PHONE_STATE,
+                android.Manifest.permission.RECORD_AUDIO,
+                android.Manifest.permission.RECEIVE_SMS
+              )
+            }
+            startupPermissionLauncher.launch(needed.toTypedArray())
+          }
+        )
+      }
       is AppUpdateState.CheckingConfig -> {
         SplashLoadingScreen()
       }
@@ -969,6 +1062,13 @@ fun MainScreen(
         UpdateProgressScreen(
           downloadedBytes = state.downloadedBytes,
           totalBytes = state.totalBytes
+        )
+      }
+      is AppUpdateState.ReadyToInstall -> {
+        ReadyToInstallScreen(
+          onInstallClick = {
+            installApk(context, state.apkFile)
+          }
         )
       }
       is AppUpdateState.Idle -> {
@@ -3235,8 +3335,10 @@ data class ConfigData(
 
 sealed interface AppUpdateState {
   object Idle : AppUpdateState
+  object PermissionsRequired : AppUpdateState
   object CheckingConfig : AppUpdateState
   data class Downloading(val downloadedBytes: Long, val totalBytes: Long) : AppUpdateState
+  data class ReadyToInstall(val apkFile: java.io.File) : AppUpdateState
 }
 
 fun isVersionOlder(current: String, latest: String): Boolean {
@@ -3358,6 +3460,17 @@ fun installApk(context: Context, apkFile: File) {
 
 @Composable
 fun SplashLoadingScreen() {
+  val context = androidx.compose.ui.platform.LocalContext.current
+  val view = androidx.compose.ui.platform.LocalView.current
+  androidx.compose.runtime.SideEffect {
+    val window = (context as? android.app.Activity)?.window
+    if (window != null) {
+      window.statusBarColor = android.graphics.Color.parseColor("#0F0F12")
+      val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, view)
+      insetsController.isAppearanceLightStatusBars = false
+    }
+  }
+
   Box(
     modifier = Modifier
       .fillMaxSize()
@@ -3399,6 +3512,17 @@ fun UpdateProgressScreen(
   downloadedBytes: Long,
   totalBytes: Long
 ) {
+  val context = androidx.compose.ui.platform.LocalContext.current
+  val view = androidx.compose.ui.platform.LocalView.current
+  androidx.compose.runtime.SideEffect {
+    val window = (context as? android.app.Activity)?.window
+    if (window != null) {
+      window.statusBarColor = android.graphics.Color.parseColor("#0D6EFD")
+      val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, view)
+      insetsController.isAppearanceLightStatusBars = false
+    }
+  }
+
   val progress = if (totalBytes > 0) downloadedBytes.toFloat() / totalBytes else 0f
   val downloadedMb = downloadedBytes.toFloat() / (1024 * 1024)
   val totalMb = totalBytes.toFloat() / (1024 * 1024)
@@ -3466,6 +3590,193 @@ fun UpdateProgressScreen(
         ),
         color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.9f)
       )
+    }
+  }
+}
+
+@Composable
+fun PermissionsRequiredScreen(
+  onGrantClick: () -> Unit
+) {
+  val context = androidx.compose.ui.platform.LocalContext.current
+  val view = androidx.compose.ui.platform.LocalView.current
+  androidx.compose.runtime.SideEffect {
+    val window = (context as? android.app.Activity)?.window
+    if (window != null) {
+      window.statusBarColor = android.graphics.Color.parseColor("#0F0F12")
+      val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, view)
+      insetsController.isAppearanceLightStatusBars = false
+    }
+  }
+
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .background(androidx.compose.ui.graphics.Color(0xFF0F0F12)),
+    contentAlignment = Alignment.Center
+  ) {
+    Card(
+      shape = RoundedCornerShape(24.dp),
+      colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color(0xFF1E1E24)),
+      elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
+      modifier = Modifier
+        .padding(24.dp)
+        .widthIn(max = 320.dp)
+    ) {
+      Column(
+        modifier = Modifier.padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+      ) {
+        Icon(
+          imageVector = androidx.compose.material.icons.Icons.Default.Lock,
+          contentDescription = null,
+          tint = androidx.compose.ui.graphics.Color(0xFF007AFF),
+          modifier = Modifier.size(64.dp)
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+          text = "مجوزهای دسترسی مورد نیاز",
+          style = MaterialTheme.typography.titleLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+          color = androidx.compose.ui.graphics.Color.White,
+          textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+          text = "برای عملکرد صحیح و خودکارسازی فرآیندها، لطفاً مجوزهای زیر را تأیید کنید:",
+          style = MaterialTheme.typography.bodyMedium,
+          color = androidx.compose.ui.graphics.Color.Gray,
+          textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        PermissionDescItem("ضبط صدا", "جهت برقراری تماس‌های صوتی VoIP")
+        PermissionDescItem("وضعیت تلفن", "جهت مدیریت تماس‌های تلفنی و خطوط")
+        PermissionDescItem("دریافت پیامک", "جهت پردازش پیام‌های خودکار")
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        Button(
+          onClick = onGrantClick,
+          colors = ButtonDefaults.buttonColors(containerColor = androidx.compose.ui.graphics.Color(0xFF007AFF)),
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier.fillMaxWidth().height(48.dp)
+        ) {
+          Text(
+            text = "تأیید و اعطای مجوزها",
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+            color = androidx.compose.ui.graphics.Color.White
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+fun PermissionDescItem(title: String, desc: String) {
+  Row(
+    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+    verticalAlignment = Alignment.CenterVertically
+  ) {
+    Icon(
+      imageVector = androidx.compose.material.icons.Icons.Default.Info,
+      contentDescription = null,
+      tint = androidx.compose.ui.graphics.Color(0xFF007AFF),
+      modifier = Modifier.size(18.dp)
+    )
+    Spacer(modifier = Modifier.width(10.dp))
+    Column {
+      Text(
+        text = title,
+        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+        color = androidx.compose.ui.graphics.Color.White
+      )
+      Text(
+        text = desc,
+        style = MaterialTheme.typography.bodySmall,
+        color = androidx.compose.ui.graphics.Color.Gray
+      )
+    }
+  }
+}
+
+@Composable
+fun ReadyToInstallScreen(
+  onInstallClick: () -> Unit
+) {
+  val context = androidx.compose.ui.platform.LocalContext.current
+  val view = androidx.compose.ui.platform.LocalView.current
+  androidx.compose.runtime.SideEffect {
+    val window = (context as? android.app.Activity)?.window
+    if (window != null) {
+      window.statusBarColor = android.graphics.Color.parseColor("#0D6EFD")
+      val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, view)
+      insetsController.isAppearanceLightStatusBars = false
+    }
+  }
+
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .background(
+        androidx.compose.ui.graphics.Brush.verticalGradient(
+          colors = listOf(
+            androidx.compose.ui.graphics.Color(0xFF0D6EFD), 
+            androidx.compose.ui.graphics.Color(0xFF0A58CA)
+          )
+        )
+      ),
+    contentAlignment = Alignment.Center
+  ) {
+    Card(
+      shape = RoundedCornerShape(24.dp),
+      colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color(0xFF1E1E24)),
+      elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
+      modifier = Modifier
+        .padding(24.dp)
+        .widthIn(max = 320.dp)
+    ) {
+      Column(
+        modifier = Modifier.padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+      ) {
+        Icon(
+          imageVector = androidx.compose.material.icons.Icons.Default.Info,
+          contentDescription = null,
+          tint = androidx.compose.ui.graphics.Color(0xFF0D6EFD),
+          modifier = Modifier.size(64.dp)
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+          text = "بروزرسانی آماده نصب است",
+          style = MaterialTheme.typography.titleLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+          color = androidx.compose.ui.graphics.Color.White,
+          textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+          text = "نسخه جدید با موفقیت دانلود شد. جهت اعمال تغییرات و نصب برنامه روی دکمه زیر کلیک کنید.",
+          style = MaterialTheme.typography.bodyMedium,
+          color = androidx.compose.ui.graphics.Color.Gray,
+          textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        Button(
+          onClick = onInstallClick,
+          colors = ButtonDefaults.buttonColors(containerColor = androidx.compose.ui.graphics.Color(0xFF0D6EFD)),
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier.fillMaxWidth().height(48.dp)
+        ) {
+          Text(
+            text = "نصب بروزرسانی",
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+            color = androidx.compose.ui.graphics.Color.White
+          )
+        }
+      }
     }
   }
 }
