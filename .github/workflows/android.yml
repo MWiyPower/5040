@@ -43,6 +43,11 @@ jobs:
           echo "GEMINI_API_KEY=placeholder_api_key" > .env
 
       - name: Build Release APK
+        env:
+          KEY: ${{ secrets.KEY }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PW: ${{ secrets.KEY_PW }}
+          KEY_PW2: ${{ secrets.KEY_PW2 }}
         run: |
           gradle assembleRelease --stacktrace
 
@@ -56,8 +61,8 @@ jobs:
         if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "v1.0.${{ github.run_number }}"
-          name: "Release v1.0.${{ github.run_number }}"
+          tag_name: "v1.1.${{ github.run_number }}"
+          name: "Release v1.1.${{ github.run_number }}"
           draft: false
           prerelease: false
           files: app/build/outputs/apk/release/*.apk

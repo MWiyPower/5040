@@ -116,16 +116,29 @@ private const val JS_BYPASS_WARNINGS = "javascript:(function() { " +
 
 private const val JS_NOTIFICATION_AND_THEME = "javascript:(function() { " +
     "try { " +
+    "  var sendNotify = function(title, options) { " +
+    "    try { " +
+    "      var bodyText = ''; " +
+    "      if (options && options.body) { bodyText = options.body; } " +
+    "      if (window.AndroidApp) { " +
+    "        if (window.AndroidApp.onNewMessageWithDetails) { " +
+    "          window.AndroidApp.onNewMessageWithDetails(title, bodyText); " +
+    "        } else if (window.AndroidApp.onNewMessage) { " +
+    "          window.AndroidApp.onNewMessage(); " +
+    "        } " +
+    "      } " +
+    "    } catch(e) {} " +
+    "  }; " +
     "  if (!window.Notification) { " +
     "    window.Notification = function(title, options) { " +
-    "      if (window.AndroidApp && window.AndroidApp.onNewMessage) { window.AndroidApp.onNewMessage(); } " +
+    "      sendNotify(title, options); " +
     "    }; " +
     "    window.Notification.permission = 'granted'; " +
     "    window.Notification.requestPermission = function(cb) { if (cb) cb('granted'); return Promise.resolve('granted'); }; " +
     "  } else { " +
     "    var OrgNotification = window.Notification; " +
     "    window.Notification = function(title, options) { " +
-    "      if (window.AndroidApp && window.AndroidApp.onNewMessage) { window.AndroidApp.onNewMessage(); } " +
+    "      sendNotify(title, options); " +
     "      try { return new OrgNotification(title, options); } catch(e) { return {}; } " +
     "    }; " +
     "    Object.assign(window.Notification, OrgNotification); " +
@@ -134,7 +147,7 @@ private const val JS_NOTIFICATION_AND_THEME = "javascript:(function() { " +
     "    navigator.serviceWorker.ready.then(function(reg) { " +
     "      var orgShow = reg.showNotification; " +
     "      reg.showNotification = function(title, options) { " +
-    "        if (window.AndroidApp && window.AndroidApp.onNewMessage) { window.AndroidApp.onNewMessage(); } " +
+    "        sendNotify(title, options); " +
     "        if (orgShow) { return orgShow.apply(reg, arguments); } " +
     "        return Promise.resolve(); " +
     "      }; " +
@@ -146,7 +159,13 @@ private const val JS_NOTIFICATION_AND_THEME = "javascript:(function() { " +
     "      var title = document.title; " +
     "      var match = title.match(/\\((\\d+)\\)/); " +
     "      if (match && parseInt(match[1]) > 0) { " +
-    "        if (window.AndroidApp && window.AndroidApp.onNewMessage) { window.AndroidApp.onNewMessage(); } " +
+    "        if (window.AndroidApp) { " +
+    "          if (window.AndroidApp.onNewMessageWithDetails) { " +
+    "            window.AndroidApp.onNewMessageWithDetails('پیام جدید', 'شما پیام‌های خوانده نشده دارید'); " +
+    "          } else if (window.AndroidApp.onNewMessage) { " +
+    "            window.AndroidApp.onNewMessage(); " +
+    "          } " +
+    "        } " +
     "      } " +
     "    }); " +
     "    observer.observe(target, { subtree: true, characterData: true, childList: true }); " +
@@ -197,6 +216,10 @@ private const val JS_PERSIST_SESSION = "javascript:(function() { " +
     "})();"
 
 class MainActivity : ComponentActivity() {
+
+  companion object {
+    var isAppInForeground = false
+  }
 
   private var filePathCallback: ValueCallback<Array<Uri>>? = null
   private var permissionRequestCallback: PermissionRequest? = null
@@ -327,6 +350,7 @@ class MainActivity : ComponentActivity() {
 
   override fun onResume() {
     super.onResume()
+    isAppInForeground = true
     if (::voipManager.isInitialized) {
       voipManager.isAppInForeground = true
     }
@@ -347,6 +371,7 @@ class MainActivity : ComponentActivity() {
 
   override fun onPause() {
     super.onPause()
+    isAppInForeground = false
     if (::voipManager.isInitialized) {
       voipManager.isAppInForeground = false
     }
@@ -363,6 +388,43 @@ class MainActivity : ComponentActivity() {
       e.printStackTrace()
     }
   }
+}
+
+private fun showSystemNotification(context: Context, title: String, body: String) {
+  val channelId = "chat_notifications_channel"
+  val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+
+  if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+    val channel = android.app.NotificationChannel(
+      channelId,
+      "اعلان‌های چت",
+      android.app.NotificationManager.IMPORTANCE_DEFAULT
+    ).apply {
+      description = "اعلان پیام‌های جدید چت پشتیبانی"
+    }
+    notificationManager.createNotificationChannel(channel)
+  }
+
+  val intent = Intent(context, MainActivity::class.java).apply {
+    flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+  }
+  val pendingIntent = android.app.PendingIntent.getActivity(
+    context,
+    101,
+    intent,
+    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+  )
+
+  val notification = androidx.core.app.NotificationCompat.Builder(context, channelId)
+    .setContentTitle(title)
+    .setContentText(body)
+    .setSmallIcon(com.example.R.mipmap.ic_launcher)
+    .setAutoCancel(true)
+    .setContentIntent(pendingIntent)
+    .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
+    .build()
+
+  notificationManager.notify(102, notification)
 }
 
 class CircularRevealShape(
@@ -614,20 +676,17 @@ fun MainScreen(
         }
       }
 
-      val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-        listOf(
-          android.Manifest.permission.READ_PHONE_STATE,
-          android.Manifest.permission.RECORD_AUDIO,
-          android.Manifest.permission.RECEIVE_SMS,
-          android.Manifest.permission.READ_CALL_LOG,
-          android.Manifest.permission.ANSWER_PHONE_CALLS
-        )
-      } else {
-        listOf(
-          android.Manifest.permission.READ_PHONE_STATE,
-          android.Manifest.permission.RECORD_AUDIO,
-          android.Manifest.permission.RECEIVE_SMS
-        )
+      val needed = mutableListOf<String>().apply {
+        add(android.Manifest.permission.READ_PHONE_STATE)
+        add(android.Manifest.permission.RECORD_AUDIO)
+        add(android.Manifest.permission.RECEIVE_SMS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+          add(android.Manifest.permission.READ_CALL_LOG)
+          add(android.Manifest.permission.ANSWER_PHONE_CALLS)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+          add(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
       }
       val missing = needed.filter { androidx.core.content.ContextCompat.checkSelfPermission(context, it) != android.content.pm.PackageManager.PERMISSION_GRANTED }
       
@@ -752,6 +811,16 @@ fun MainScreen(
           (context as? Activity)?.runOnUiThread {
             if (!chatExpanded) {
               hasNewChatMessage = true
+            }
+          }
+        },
+        onNewMessageWithDetails = { title, body ->
+          (context as? Activity)?.runOnUiThread {
+            if (!chatExpanded) {
+              hasNewChatMessage = true
+            }
+            if (!MainActivity.isAppInForeground) {
+              showSystemNotification(context, title, body)
             }
           }
         }
@@ -892,6 +961,16 @@ fun MainScreen(
           (context as? Activity)?.runOnUiThread {
             if (!chatExpanded) {
               hasNewChatMessage = true
+            }
+          }
+        },
+        onNewMessageWithDetails = { title, body ->
+          (context as? Activity)?.runOnUiThread {
+            if (!chatExpanded) {
+              hasNewChatMessage = true
+            }
+            if (!MainActivity.isAppInForeground) {
+              showSystemNotification(context, title, body)
             }
           }
         }
@@ -1036,20 +1115,17 @@ fun MainScreen(
       is AppUpdateState.PermissionsRequired -> {
         PermissionsRequiredScreen(
           onGrantClick = {
-            val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-              listOf(
-                android.Manifest.permission.READ_PHONE_STATE,
-                android.Manifest.permission.RECORD_AUDIO,
-                android.Manifest.permission.RECEIVE_SMS,
-                android.Manifest.permission.READ_CALL_LOG,
-                android.Manifest.permission.ANSWER_PHONE_CALLS
-              )
-            } else {
-              listOf(
-                android.Manifest.permission.READ_PHONE_STATE,
-                android.Manifest.permission.RECORD_AUDIO,
-                android.Manifest.permission.RECEIVE_SMS
-              )
+            val needed = mutableListOf<String>().apply {
+              add(android.Manifest.permission.READ_PHONE_STATE)
+              add(android.Manifest.permission.RECORD_AUDIO)
+              add(android.Manifest.permission.RECEIVE_SMS)
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                add(android.Manifest.permission.READ_CALL_LOG)
+                add(android.Manifest.permission.ANSWER_PHONE_CALLS)
+              }
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(android.Manifest.permission.POST_NOTIFICATIONS)
+              }
             }
             startupPermissionLauncher.launch(needed.toTypedArray())
           }
@@ -1216,7 +1292,10 @@ fun MainScreen(
         ) {
           AndroidView(
             factory = { chatWebView },
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+              .fillMaxSize()
+              .navigationBarsPadding()
+              .imePadding()
           )
 
           AnimatedVisibility(
@@ -1240,13 +1319,6 @@ fun MainScreen(
           .absolutePadding(bottom = 24.dp, right = 24.dp)
           .offset(y = fabYOffset)
           .size(56.dp)
-          .shadow(elevation = 6.dp, shape = CircleShape)
-          .background(
-            color = if (chatExpanded) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.primaryContainer,
-            shape = CircleShape
-          )
-          .clip(CircleShape)
-          .clickable { chatExpanded = !chatExpanded }
           .onGloballyPositioned { coordinates ->
             if (!chatExpanded) {
               val localPosition = coordinates.positionInParent()
@@ -1256,24 +1328,36 @@ fun MainScreen(
                 y = localPosition.y + size.height / 2f
               )
             }
-          },
-        contentAlignment = Alignment.Center
+          }
       ) {
         Box(
-          modifier = Modifier.graphicsLayer {
-            rotationZ = iconRotation
-          }
+          modifier = Modifier
+            .fillMaxSize()
+            .shadow(elevation = 6.dp, shape = CircleShape)
+            .background(
+              color = if (chatExpanded) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.primaryContainer,
+              shape = CircleShape
+            )
+            .clip(CircleShape)
+            .clickable { chatExpanded = !chatExpanded },
+          contentAlignment = Alignment.Center
         ) {
-          if (chatExpanded) {
-            PanelLogoIcon(
-              modifier = Modifier.size(24.dp),
-              color = MaterialTheme.colorScheme.onSecondaryContainer
-            )
-          } else {
-            ChatLogoIcon(
-              modifier = Modifier.size(24.dp),
-              color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
+          Box(
+            modifier = Modifier.graphicsLayer {
+              rotationZ = iconRotation
+            }
+          ) {
+            if (chatExpanded) {
+              PanelLogoIcon(
+                modifier = Modifier.size(24.dp),
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+              )
+            } else {
+              ChatLogoIcon(
+                modifier = Modifier.size(24.dp),
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+              )
+            }
           }
         }
 
@@ -1290,10 +1374,11 @@ fun MainScreen(
           )
           Box(
             modifier = Modifier
-              .size(12.dp)
+              .size(14.dp)
               .align(Alignment.TopEnd)
-              .offset(x = (-4).dp, y = 4.dp)
-              .background(androidx.compose.ui.graphics.Color.Red.copy(alpha = blinkAlpha), shape = androidx.compose.foundation.shape.CircleShape)
+              .offset(x = 2.dp, y = (-2).dp)
+              .background(androidx.compose.ui.graphics.Color.Red.copy(alpha = blinkAlpha), shape = CircleShape)
+              .border(1.5.dp, androidx.compose.ui.graphics.Color.White, CircleShape)
           )
         }
       }
@@ -2025,7 +2110,8 @@ fun FloatingCredentialsMenu(
 
 class WebAppInterface(
   private val onShowCredentials: () -> Unit,
-  private val onNewMessage: (() -> Unit)? = null
+  private val onNewMessage: (() -> Unit)? = null,
+  private val onNewMessageWithDetails: ((String, String) -> Unit)? = null
 ) {
   @JavascriptInterface
   fun showCredentials() {
@@ -2035,6 +2121,11 @@ class WebAppInterface(
   @JavascriptInterface
   fun onNewMessage() {
     onNewMessage?.invoke()
+  }
+
+  @JavascriptInterface
+  fun onNewMessageWithDetails(title: String?, body: String?) {
+    onNewMessageWithDetails?.invoke(title ?: "", body ?: "")
   }
 }
 

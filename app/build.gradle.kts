@@ -1,3 +1,5 @@
+import java.util.Base64
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.compose)
@@ -38,31 +40,49 @@ android {
     applicationId = "com.valiorsw.p5040"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0.0"
+    versionCode = 2
+    versionName = "1.1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
   signingConfigs {
     create("release") {
-      val keystorePath = getSecret("KEYSTORE_PATH", "${rootDir}/debug.keystore")
-      val keystoreFile = file(keystorePath)
-      val storePasswordVal = getSecret("STORE_PASSWORD", "android")
-      val keyAliasVal = getSecret("KEY_ALIAS", "androiddebugkey")
-      val keyPasswordVal = getSecret("KEY_PASSWORD", "android")
+      val keyBase64 = System.getenv("KEY") ?: getSecret("KEY")
+      val keyAliasVal = System.getenv("KEY_ALIAS") ?: getSecret("KEY_ALIAS")
+      val keyPwVal = System.getenv("KEY_PW") ?: getSecret("KEY_PW")
+      val keyPw2Val = System.getenv("KEY_PW2") ?: getSecret("KEY_PW2")
 
-      if (keystoreFile.exists()) {
+      if (!keyBase64.isNullOrBlank() && !keyAliasVal.isNullOrBlank()) {
+        val keystoreFile = file("${rootDir}/release.keystore")
+        try {
+          val decoded = Base64.getDecoder().decode(keyBase64.trim().replace("\\s".toRegex(), ""))
+          keystoreFile.writeBytes(decoded)
+        } catch (ex: Exception) {
+          throw GradleException("Failed to decode KEY base64: ${ex.message}")
+        }
         storeFile = keystoreFile
-        storePassword = storePasswordVal
+        storePassword = if (!keyPw2Val.isNullOrBlank()) keyPw2Val else keyPwVal
         keyAlias = keyAliasVal
-        keyPassword = keyPasswordVal
+        keyPassword = keyPwVal
       } else {
-        // Fallback to local auto-generated debug signature if the specified keystore does not exist
-        storeFile = file("${rootDir}/debug.keystore")
-        storePassword = "android"
-        keyAlias = "androiddebugkey"
-        keyPassword = "android"
+        val keystorePath = getSecret("KEYSTORE_PATH", "${rootDir}/debug.keystore")
+        val keystoreFile = file(keystorePath)
+        val storePasswordVal = getSecret("STORE_PASSWORD", "android")
+        val keyAliasValLocal = getSecret("KEY_ALIAS", "androiddebugkey")
+        val keyPasswordVal = getSecret("KEY_PASSWORD", "android")
+
+        if (keystoreFile.exists()) {
+          storeFile = keystoreFile
+          storePassword = storePasswordVal
+          keyAlias = keyAliasValLocal
+          keyPassword = keyPasswordVal
+        } else {
+          storeFile = file("${rootDir}/debug.keystore")
+          storePassword = "android"
+          keyAlias = "androiddebugkey"
+          keyPassword = "android"
+        }
       }
     }
     create("debugConfig") {
