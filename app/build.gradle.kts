@@ -40,8 +40,8 @@ android {
     applicationId = "com.valiorsw.p5040"
     minSdk = 24
     targetSdk = 36
-    versionCode = 3
-    versionName = "1.1.1"
+    versionCode = 4
+    versionName = "1.1.2"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -148,7 +148,7 @@ dependencies {
   // implementation(libs.androidx.navigation.compose)
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
-  // implementation(libs.coil.compose)
+  implementation(libs.coil.compose)
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
   implementation(libs.kotlinx.coroutines.android)

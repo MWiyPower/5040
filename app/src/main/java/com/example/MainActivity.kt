@@ -41,6 +41,8 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -104,6 +106,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import coil.compose.AsyncImage
 import com.example.ui.theme.MyApplicationTheme
 
 private const val JS_BYPASS_WARNINGS = "javascript:(function() { " +
@@ -205,6 +208,49 @@ private const val JS_NOTIFICATION_AND_THEME = "javascript:(function() { " +
     "    addFocusListener(); " +
     "    var focusObserver = new MutationObserver(addFocusListener); " +
     "    focusObserver.observe(document.documentElement, { childList: true, subtree: true }); " +
+    "  } catch(e) {} " +
+    "  try { " +
+    "    var checkProfile = function() { " +
+    "      try { " +
+    "        var hints = document.querySelectorAll('.panel-item-hint'); " +
+    "        for (var i = 0; i < hints.length; i++) { " +
+    "          var hint = hints[i]; " +
+    "          if (hint.textContent && hint.textContent.trim().toLowerCase() === 'dark mode') { " +
+    "            var parent = hint.closest('.panel-item'); " +
+    "            if (parent) { " +
+    "              parent.style.setProperty('display', 'none', 'important'); " +
+    "            } " +
+    "          } " +
+    "        } " +
+    "      } catch(e) {} " +
+    "      var imgEl = document.querySelector('.avatar img'); " +
+    "      var avatarUrl = ''; " +
+    "      if (imgEl && imgEl.src) { " +
+    "        avatarUrl = imgEl.src; " +
+    "      } else { " +
+    "        var avDiv = document.querySelector('.avatar'); " +
+    "        if (avDiv) { " +
+    "          var bg = avDiv.style.backgroundImage; " +
+    "          if (bg && bg.indexOf('url') !== -1) { " +
+    "            var match = bg.match(/url\\s*\\(\\s*['\"]?([^'\"]+)['\"]?\\s*\\)/); " +
+    "            if (match && match[1]) { " +
+    "              avatarUrl = match[1]; " +
+    "            } " +
+    "          } " +
+    "        } " +
+    "      } " +
+    "      var nameEl = document.querySelector('.welcomeName'); " +
+    "      var fullName = ''; " +
+    "      if (nameEl) { " +
+    "        fullName = nameEl.textContent || nameEl.innerText || ''; " +
+    "      } " +
+    "      if (window.AndroidApp && window.AndroidApp.onUserProfileDetected && (fullName || avatarUrl)) { " +
+    "        window.AndroidApp.onUserProfileDetected(fullName, avatarUrl); " +
+    "      } " +
+    "    }; " +
+    "    checkProfile(); " +
+    "    var profileObserver = new MutationObserver(checkProfile); " +
+    "    profileObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true }); " +
     "  } catch(e) {} " +
     "  var styleMobile = document.createElement('style'); " +
     "  styleMobile.type = 'text/css'; " +
@@ -580,6 +626,8 @@ fun MainScreen(
   var showVoipSheet by remember { mutableStateOf(false) }
   var isDrawerOpen by remember { mutableStateOf(false) }
   var showSettingsDialog by remember { mutableStateOf(false) }
+  var userFullName by remember { mutableStateOf<String?>(null) }
+  var userAvatarUrl by remember { mutableStateOf<String?>(null) }
 
   val context = LocalContext.current
   val voipCallState by voipManager.callState.collectAsState()
@@ -866,6 +914,16 @@ fun MainScreen(
           (context as? Activity)?.runOnUiThread {
             detectedWebTheme = theme
           }
+        },
+        onUserProfileDetected = { name, avatar ->
+          (context as? Activity)?.runOnUiThread {
+            if (name.isNotEmpty()) {
+              userFullName = name
+            }
+            if (avatar.isNotEmpty()) {
+              userAvatarUrl = avatar
+            }
+          }
         }
       ), "AndroidApp")
       
@@ -873,6 +931,46 @@ fun MainScreen(
         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
           super.onPageStarted(view, url, favicon)
           view?.loadUrl(JS_PERSIST_SESSION)
+          
+          val isSystemDark = systemDark
+          val earlyThemeJs = "javascript:(function() { " +
+              "try { " +
+              "  var wantDark = $isSystemDark; " +
+              "  var changed = false; " +
+              "  var pData = localStorage.getItem('private-data') || '{}'; " +
+              "  var pValue = JSON.parse(pData) || {}; " +
+              "  if (!pValue.settings) pValue.settings = {}; " +
+              "  var current = pValue.settings.theme || 'light'; " +
+              "  if (wantDark && current !== 'dark') { " +
+              "    pValue.settings.theme = 'dark'; " +
+              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
+              "    changed = true; " +
+              "  } else if (!wantDark && current === 'dark') { " +
+              "    pValue.settings.theme = 'light'; " +
+              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
+              "    changed = true; " +
+              "  } " +
+              "  var directTheme = localStorage.getItem('theme'); " +
+              "  if (wantDark && directTheme !== 'dark') { " +
+              "    localStorage.setItem('theme', 'dark'); " +
+              "    changed = true; " +
+              "  } else if (!wantDark && directTheme === 'dark') { " +
+              "    localStorage.setItem('theme', 'light'); " +
+              "    changed = true; " +
+              "  } " +
+              "  if (wantDark) { " +
+              "    document.documentElement.classList.add('dark'); " +
+              "    document.documentElement.setAttribute('data-theme', 'dark'); " +
+              "  } else { " +
+              "    document.documentElement.classList.remove('dark'); " +
+              "    document.documentElement.setAttribute('data-theme', 'light'); " +
+              "  } " +
+              "  if (changed) { " +
+              "    window.location.reload(); " +
+              "  } " +
+              "} catch(e) {} " +
+              "})();"
+          view?.loadUrl(earlyThemeJs)
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
@@ -885,6 +983,7 @@ fun MainScreen(
           val themeJs = "javascript:(function() { " +
               "try { " +
               "  var wantDark = $isSystemDark; " +
+              "  var changed = false; " +
               "  var pData = localStorage.getItem('private-data') || '{}'; " +
               "  var pValue = JSON.parse(pData) || {}; " +
               "  if (!pValue.settings) pValue.settings = {}; " +
@@ -892,10 +991,28 @@ fun MainScreen(
               "  if (wantDark && current !== 'dark') { " +
               "    pValue.settings.theme = 'dark'; " +
               "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
-              "    window.location.reload(); " +
+              "    changed = true; " +
               "  } else if (!wantDark && current === 'dark') { " +
               "    pValue.settings.theme = 'light'; " +
               "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
+              "    changed = true; " +
+              "  } " +
+              "  var directTheme = localStorage.getItem('theme'); " +
+              "  if (wantDark && directTheme !== 'dark') { " +
+              "    localStorage.setItem('theme', 'dark'); " +
+              "    changed = true; " +
+              "  } else if (!wantDark && directTheme === 'dark') { " +
+              "    localStorage.setItem('theme', 'light'); " +
+              "    changed = true; " +
+              "  } " +
+              "  if (wantDark) { " +
+              "    document.documentElement.classList.add('dark'); " +
+              "    document.documentElement.setAttribute('data-theme', 'dark'); " +
+              "  } else { " +
+              "    document.documentElement.classList.remove('dark'); " +
+              "    document.documentElement.setAttribute('data-theme', 'light'); " +
+              "  } " +
+              "  if (changed) { " +
               "    window.location.reload(); " +
               "  } " +
               "} catch(e) {} " +
@@ -1044,6 +1161,16 @@ fun MainScreen(
           (context as? Activity)?.runOnUiThread {
             detectedWebTheme = theme
           }
+        },
+        onUserProfileDetected = { name, avatar ->
+          (context as? Activity)?.runOnUiThread {
+            if (name.isNotEmpty()) {
+              userFullName = name
+            }
+            if (avatar.isNotEmpty()) {
+              userAvatarUrl = avatar
+            }
+          }
         }
       ), "AndroidApp")
       
@@ -1051,6 +1178,46 @@ fun MainScreen(
         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
           super.onPageStarted(view, url, favicon)
           view?.loadUrl(JS_PERSIST_SESSION)
+          
+          val isSystemDark = systemDark
+          val earlyThemeJs = "javascript:(function() { " +
+              "try { " +
+              "  var wantDark = $isSystemDark; " +
+              "  var changed = false; " +
+              "  var pData = localStorage.getItem('private-data') || '{}'; " +
+              "  var pValue = JSON.parse(pData) || {}; " +
+              "  if (!pValue.settings) pValue.settings = {}; " +
+              "  var current = pValue.settings.theme || 'light'; " +
+              "  if (wantDark && current !== 'dark') { " +
+              "    pValue.settings.theme = 'dark'; " +
+              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
+              "    changed = true; " +
+              "  } else if (!wantDark && current === 'dark') { " +
+              "    pValue.settings.theme = 'light'; " +
+              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
+              "    changed = true; " +
+              "  } " +
+              "  var directTheme = localStorage.getItem('theme'); " +
+              "  if (wantDark && directTheme !== 'dark') { " +
+              "    localStorage.setItem('theme', 'dark'); " +
+              "    changed = true; " +
+              "  } else if (!wantDark && directTheme === 'dark') { " +
+              "    localStorage.setItem('theme', 'light'); " +
+              "    changed = true; " +
+              "  } " +
+              "  if (wantDark) { " +
+              "    document.documentElement.classList.add('dark'); " +
+              "    document.documentElement.setAttribute('data-theme', 'dark'); " +
+              "  } else { " +
+              "    document.documentElement.classList.remove('dark'); " +
+              "    document.documentElement.setAttribute('data-theme', 'light'); " +
+              "  } " +
+              "  if (changed) { " +
+              "    window.location.reload(); " +
+              "  } " +
+              "} catch(e) {} " +
+              "})();"
+          view?.loadUrl(earlyThemeJs)
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
@@ -1063,6 +1230,7 @@ fun MainScreen(
           val themeJs = "javascript:(function() { " +
               "try { " +
               "  var wantDark = $isSystemDark; " +
+              "  var changed = false; " +
               "  var pData = localStorage.getItem('private-data') || '{}'; " +
               "  var pValue = JSON.parse(pData) || {}; " +
               "  if (!pValue.settings) pValue.settings = {}; " +
@@ -1070,10 +1238,28 @@ fun MainScreen(
               "  if (wantDark && current !== 'dark') { " +
               "    pValue.settings.theme = 'dark'; " +
               "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
-              "    window.location.reload(); " +
+              "    changed = true; " +
               "  } else if (!wantDark && current === 'dark') { " +
               "    pValue.settings.theme = 'light'; " +
               "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
+              "    changed = true; " +
+              "  } " +
+              "  var directTheme = localStorage.getItem('theme'); " +
+              "  if (wantDark && directTheme !== 'dark') { " +
+              "    localStorage.setItem('theme', 'dark'); " +
+              "    changed = true; " +
+              "  } else if (!wantDark && directTheme === 'dark') { " +
+              "    localStorage.setItem('theme', 'light'); " +
+              "    changed = true; " +
+              "  } " +
+              "  if (wantDark) { " +
+              "    document.documentElement.classList.add('dark'); " +
+              "    document.documentElement.setAttribute('data-theme', 'dark'); " +
+              "  } else { " +
+              "    document.documentElement.classList.remove('dark'); " +
+              "    document.documentElement.setAttribute('data-theme', 'light'); " +
+              "  } " +
+              "  if (changed) { " +
               "    window.location.reload(); " +
               "  } " +
               "} catch(e) {} " +
@@ -1371,7 +1557,7 @@ fun MainScreen(
           Modifier
         }
 
-        val isChatDark = systemDark || detectedWebTheme == "dark"
+        val isChatDark = systemDark
         val chatBgColor = if (isChatDark) Color(0xFF1E1E1E) else Color(0xFF6750A4)
 
         Box(
@@ -1410,7 +1596,7 @@ fun MainScreen(
       }
 
       // Floating Action Button Overlay (Completely Circular, bottom-right side absolute)
-      val isChatDark = systemDark || detectedWebTheme == "dark"
+      val isChatDark = systemDark
       val fabBgColor = if (isChatDark) {
         if (chatExpanded) Color(0xFF2D2D2D) else Color(0xFF1E1E1E)
       } else {
@@ -1544,100 +1730,165 @@ fun MainScreen(
             .background(Color.Black.copy(alpha = 0.5f))
             .clickable { isDrawerOpen = false }
         ) {
-          Box(
-            modifier = Modifier
-              .fillMaxHeight()
-              .width(280.dp)
-              .align(Alignment.TopStart) // Aligned to Start (Right side in RTL)
-              .background(MaterialTheme.colorScheme.surface)
-              .clickable(enabled = true, onClick = {}) // prevent click-through
-              .padding(16.dp)
+          AnimatedVisibility(
+            visible = isDrawerOpen,
+            enter = slideInHorizontally(initialOffsetX = { it }),
+            exit = slideOutHorizontally(targetOffsetX = { it }),
+            modifier = Modifier.align(Alignment.TopStart)
           ) {
-            Column(
-              modifier = Modifier.fillMaxSize()
+            Box(
+              modifier = Modifier
+                .fillMaxHeight()
+                .width(280.dp)
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(enabled = true, onClick = {}) // prevent click-through
+                .padding(16.dp)
             ) {
               Column(
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.fillMaxSize()
               ) {
-                Row(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 12.dp),
-                  verticalAlignment = Alignment.CenterVertically
+                Column(
+                  modifier = Modifier.weight(1f)
                 ) {
-                  Box(
+                  if (userFullName == null) {
+                    Row(
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 12.dp),
+                      verticalAlignment = Alignment.CenterVertically
+                    ) {
+                      androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier.size(28.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        strokeWidth = 3.dp
+                      )
+                      Spacer(modifier = Modifier.width(12.dp))
+                      Text(
+                        text = "در حال بارگذاری اطلاعات...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                      )
+                    }
+                  } else {
+                    // User info parse logic
+                    val rawName = userFullName ?: ""
+                    val trimmedName = rawName.trim()
+                    var suffix = ""
+                    var displayName = trimmedName
+
+                    if (trimmedName.endsWith("RW", ignoreCase = true)) {
+                        suffix = "RW"
+                        displayName = trimmedName.substring(0, trimmedName.length - 2).trim()
+                    } else if (trimmedName.endsWith("NP", ignoreCase = true)) {
+                        suffix = "NP"
+                        displayName = trimmedName.substring(0, trimmedName.length - 2).trim()
+                    } else if (trimmedName.endsWith("VP", ignoreCase = true)) {
+                        suffix = "VP"
+                        displayName = trimmedName.substring(0, trimmedName.length - 2).trim()
+                    }
+
+                    val roleText = when (suffix.uppercase()) {
+                        "RW" -> "دور کار"
+                        "NP" -> "حضوری"
+                        "VP" -> "لیدر"
+                        else -> ""
+                    }
+
+                    val displayTitle = if (displayName.isNotEmpty()) displayName else "کاربر گرامی"
+                    val displaySubtitle = if (roleText.isNotEmpty()) roleText else "منوی دسترسی سریع"
+
+                    Row(
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 12.dp),
+                      verticalAlignment = Alignment.CenterVertically
+                    ) {
+                      Box(
+                        modifier = Modifier
+                          .size(40.dp)
+                          .background(MaterialTheme.colorScheme.primaryContainer, shape = CircleShape),
+                        contentAlignment = Alignment.Center
+                      ) {
+                        if (!userAvatarUrl.isNullOrEmpty()) {
+                          AsyncImage(
+                            model = userAvatarUrl,
+                            contentDescription = "تصویر پروفایل",
+                            modifier = Modifier
+                              .size(40.dp)
+                              .clip(CircleShape),
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                          )
+                        } else {
+                          Icon(
+                            imageVector = Icons.Filled.Person,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(22.dp)
+                          )
+                        }
+                      }
+                      Spacer(modifier = Modifier.width(12.dp))
+                      Column {
+                        Text(
+                          text = displayTitle,
+                          style = MaterialTheme.typography.titleMedium,
+                          color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                          text = displaySubtitle,
+                          style = MaterialTheme.typography.bodySmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                      }
+                    }
+                  }
+
+                  Divider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 8.dp))
+
+                  // VoIP features are temporarily disabled
+
+
+                  // Credentials Item
+                  Row(
                     modifier = Modifier
-                      .size(40.dp)
-                      .background(MaterialTheme.colorScheme.primaryContainer, shape = CircleShape),
-                    contentAlignment = Alignment.Center
+                      .fillMaxWidth()
+                      .clip(MaterialTheme.shapes.medium)
+                      .clickable {
+                        showFullPasswordManager = true
+                        isDrawerOpen = false
+                      }
+                      .padding(vertical = 12.dp, horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                   ) {
                     Icon(
-                      imageVector = Icons.Filled.Person,
+                      imageVector = Icons.Filled.Lock,
                       contentDescription = null,
-                      tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                      modifier = Modifier.size(22.dp)
+                      tint = MaterialTheme.colorScheme.primary,
+                      modifier = Modifier.size(24.dp)
                     )
-                  }
-                  Spacer(modifier = Modifier.width(12.dp))
-                  Column {
                     Text(
-                      text = "کاربر گرامی",
-                      style = MaterialTheme.typography.titleMedium,
+                      text = "مدیریت رمز های عبور",
+                      style = MaterialTheme.typography.titleSmall,
                       color = MaterialTheme.colorScheme.onSurface
                     )
-                    Text(
-                      text = "منوی دسترسی سریع",
-                      style = MaterialTheme.typography.bodySmall,
-                      color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                   }
                 }
 
+                // Drawer Footer with Version text
                 Divider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 8.dp))
-
-                // VoIP features are temporarily disabled
-
-
-                // Credentials Item
-                Row(
+                Box(
                   modifier = Modifier
                     .fillMaxWidth()
-                    .clip(MaterialTheme.shapes.medium)
-                    .clickable {
-                      showFullPasswordManager = true
-                      isDrawerOpen = false
-                    }
-                    .padding(vertical = 12.dp, horizontal = 8.dp),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(vertical = 8.dp),
+                  contentAlignment = Alignment.Center
                 ) {
-                  Icon(
-                    imageVector = Icons.Filled.Lock,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(24.dp)
-                  )
                   Text(
-                    text = "مدیریت رمز های عبور",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface
+                    text = "V1.1.2",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                   )
                 }
-              }
-
-              // Drawer Footer with Version text
-              Divider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 8.dp))
-              Box(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .padding(vertical = 8.dp),
-                contentAlignment = Alignment.Center
-              ) {
-                Text(
-                  text = "نسخه V1.1.1",
-                  style = MaterialTheme.typography.labelMedium,
-                  color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                )
               }
             }
           }
@@ -2238,7 +2489,8 @@ class WebAppInterface(
   private val onShowCredentials: () -> Unit,
   private val onNewMessage: (() -> Unit)? = null,
   private val onNewMessageWithDetails: ((String, String) -> Unit)? = null,
-  private val onWebThemeDetected: ((String) -> Unit)? = null
+  private val onWebThemeDetected: ((String) -> Unit)? = null,
+  private val onUserProfileDetected: ((String, String) -> Unit)? = null
 ) {
   @JavascriptInterface
   fun showCredentials() {
@@ -2258,6 +2510,11 @@ class WebAppInterface(
   @JavascriptInterface
   fun onWebThemeDetected(theme: String?) {
     onWebThemeDetected?.invoke(theme ?: "light")
+  }
+
+  @JavascriptInterface
+  fun onUserProfileDetected(name: String?, avatarUrl: String?) {
+    onUserProfileDetected?.invoke(name ?: "", avatarUrl ?: "")
   }
 }
 
