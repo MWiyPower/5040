@@ -44,6 +44,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
 import android.provider.Settings
@@ -170,6 +171,41 @@ private const val JS_NOTIFICATION_AND_THEME = "javascript:(function() { " +
     "    }); " +
     "    observer.observe(target, { subtree: true, characterData: true, childList: true }); " +
     "  } " +
+    "  try { " +
+    "    var currentTheme = 'light'; " +
+    "    var pData = localStorage.getItem('private-data'); " +
+    "    if (pData) { " +
+    "      var pValue = JSON.parse(pData); " +
+    "      if (pValue && pValue.settings && pValue.settings.theme) { " +
+    "        currentTheme = pValue.settings.theme; " +
+    "      } " +
+    "    } " +
+    "    if (document.querySelector('link[href*=\"dark\"]')) { " +
+    "      currentTheme = 'dark'; " +
+    "    } " +
+    "    if (window.AndroidApp && window.AndroidApp.onWebThemeDetected) { " +
+    "      window.AndroidApp.onWebThemeDetected(currentTheme); " +
+    "    } " +
+    "  } catch(e) {} " +
+    "  try { " +
+    "    var addFocusListener = function() { " +
+    "      var inputs = document.querySelectorAll('input[type=\"password\"]'); " +
+    "      for (var i = 0; i < inputs.length; i++) { " +
+    "        var input = inputs[i]; " +
+    "        if (!input.dataset.hasCredentialsListener) { " +
+    "          input.dataset.hasCredentialsListener = \"true\"; " +
+    "          input.addEventListener('focus', function() { " +
+    "            if (window.AndroidApp && window.AndroidApp.showCredentials) { " +
+    "              window.AndroidApp.showCredentials(); " +
+    "            } " +
+    "          }); " +
+    "        } " +
+    "      } " +
+    "    }; " +
+    "    addFocusListener(); " +
+    "    var focusObserver = new MutationObserver(addFocusListener); " +
+    "    focusObserver.observe(document.documentElement, { childList: true, subtree: true }); " +
+    "  } catch(e) {} " +
     "  var styleMobile = document.createElement('style'); " +
     "  styleMobile.type = 'text/css'; " +
     "  styleMobile.innerHTML = 'html, body { max-width: 100% !important; overflow-x: hidden !important; } .container, .main-container { width: 100% !important; max-width: 100% !important; }'; " +
@@ -526,6 +562,7 @@ fun MainScreen(
   onOpenFilePicker: (ValueCallback<Array<Uri>>?, Array<String>?, Boolean) -> Unit,
   onPermissionRequest: (PermissionRequest) -> Unit
 ) {
+  val systemDark = isSystemInDarkTheme()
   var isMainLoaded by remember { mutableStateOf(false) }
   var isChatLoaded by remember { mutableStateOf(false) }
 
@@ -535,6 +572,7 @@ fun MainScreen(
 
   var isOnlineState by remember { mutableStateOf(true) }
   var hasWebLoadError by remember { mutableStateOf(false) }
+  var detectedWebTheme by remember { mutableStateOf("light") }
 
   var fabPosition by remember { mutableStateOf(Offset(900f, 1800f)) }
   var showCredentialsSheet by remember { mutableStateOf(false) }
@@ -823,6 +861,11 @@ fun MainScreen(
               showSystemNotification(context, title, body)
             }
           }
+        },
+        onWebThemeDetected = { theme ->
+          (context as? Activity)?.runOnUiThread {
+            detectedWebTheme = theme
+          }
         }
       ), "AndroidApp")
       
@@ -836,6 +879,29 @@ fun MainScreen(
           super.onPageFinished(view, url)
           isMainLoaded = true
           CookieManager.getInstance().flush()
+          
+          // Sync system dark theme to WebView localStorage
+          val isSystemDark = systemDark
+          val themeJs = "javascript:(function() { " +
+              "try { " +
+              "  var wantDark = $isSystemDark; " +
+              "  var pData = localStorage.getItem('private-data') || '{}'; " +
+              "  var pValue = JSON.parse(pData) || {}; " +
+              "  if (!pValue.settings) pValue.settings = {}; " +
+              "  var current = pValue.settings.theme || 'light'; " +
+              "  if (wantDark && current !== 'dark') { " +
+              "    pValue.settings.theme = 'dark'; " +
+              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
+              "    window.location.reload(); " +
+              "  } else if (!wantDark && current === 'dark') { " +
+              "    pValue.settings.theme = 'light'; " +
+              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
+              "    window.location.reload(); " +
+              "  } " +
+              "} catch(e) {} " +
+              "})();"
+          view?.loadUrl(themeJs)
+          
           view?.loadUrl(JS_PERSIST_SESSION)
           view?.loadUrl(JS_BYPASS_WARNINGS)
           view?.loadUrl(JS_NOTIFICATION_AND_THEME)
@@ -973,6 +1039,11 @@ fun MainScreen(
               showSystemNotification(context, title, body)
             }
           }
+        },
+        onWebThemeDetected = { theme ->
+          (context as? Activity)?.runOnUiThread {
+            detectedWebTheme = theme
+          }
         }
       ), "AndroidApp")
       
@@ -986,6 +1057,29 @@ fun MainScreen(
           super.onPageFinished(view, url)
           isChatLoaded = true
           CookieManager.getInstance().flush()
+          
+          // Sync system dark theme to WebView localStorage
+          val isSystemDark = systemDark
+          val themeJs = "javascript:(function() { " +
+              "try { " +
+              "  var wantDark = $isSystemDark; " +
+              "  var pData = localStorage.getItem('private-data') || '{}'; " +
+              "  var pValue = JSON.parse(pData) || {}; " +
+              "  if (!pValue.settings) pValue.settings = {}; " +
+              "  var current = pValue.settings.theme || 'light'; " +
+              "  if (wantDark && current !== 'dark') { " +
+              "    pValue.settings.theme = 'dark'; " +
+              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
+              "    window.location.reload(); " +
+              "  } else if (!wantDark && current === 'dark') { " +
+              "    pValue.settings.theme = 'light'; " +
+              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
+              "    window.location.reload(); " +
+              "  } " +
+              "} catch(e) {} " +
+              "})();"
+          view?.loadUrl(themeJs)
+          
           view?.loadUrl(JS_PERSIST_SESSION)
           view?.loadUrl(JS_BYPASS_WARNINGS)
           view?.loadUrl(JS_NOTIFICATION_AND_THEME)
@@ -1277,6 +1371,9 @@ fun MainScreen(
           Modifier
         }
 
+        val isChatDark = systemDark || detectedWebTheme == "dark"
+        val chatBgColor = if (isChatDark) Color(0xFF1E1E1E) else Color(0xFF6750A4)
+
         Box(
           modifier = Modifier
             .fillMaxSize()
@@ -1287,7 +1384,7 @@ fun MainScreen(
                 shape = CircularRevealShape(bubbleProgress, fabPosition)
               }
             }
-            .background(Color(0xFF6750A4))
+            .background(chatBgColor)
             .then(inputModifier)
         ) {
           AndroidView(
@@ -1305,7 +1402,7 @@ fun MainScreen(
           ) {
             LoadingScreen(
               message = "در حال ورود به چت...",
-              backgroundColor = Color(0xFF6750A4),
+              backgroundColor = chatBgColor,
               contentColor = Color.White
             )
           }
@@ -1313,6 +1410,18 @@ fun MainScreen(
       }
 
       // Floating Action Button Overlay (Completely Circular, bottom-right side absolute)
+      val isChatDark = systemDark || detectedWebTheme == "dark"
+      val fabBgColor = if (isChatDark) {
+        if (chatExpanded) Color(0xFF2D2D2D) else Color(0xFF1E1E1E)
+      } else {
+        if (chatExpanded) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.primaryContainer
+      }
+      val fabIconColor = if (isChatDark) {
+        Color.White
+      } else {
+        if (chatExpanded) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onPrimaryContainer
+      }
+
       Box(
         modifier = Modifier
           .align(AbsoluteAlignment.BottomRight)
@@ -1335,7 +1444,7 @@ fun MainScreen(
             .fillMaxSize()
             .shadow(elevation = 6.dp, shape = CircleShape)
             .background(
-              color = if (chatExpanded) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.primaryContainer,
+              color = fabBgColor,
               shape = CircleShape
             )
             .clip(CircleShape)
@@ -1350,12 +1459,12 @@ fun MainScreen(
             if (chatExpanded) {
               PanelLogoIcon(
                 modifier = Modifier.size(24.dp),
-                color = MaterialTheme.colorScheme.onSecondaryContainer
+                color = fabIconColor
               )
             } else {
               ChatLogoIcon(
                 modifier = Modifier.size(24.dp),
-                color = MaterialTheme.colorScheme.onPrimaryContainer
+                color = fabIconColor
               )
             }
           }
@@ -1390,7 +1499,7 @@ fun MainScreen(
       Box(
         modifier = Modifier
           .align(AbsoluteAlignment.TopLeft)
-          .absolutePadding(top = 40.dp, left = 16.dp)
+          .absolutePadding(top = 56.dp, left = 16.dp)
           .size(44.dp)
           .shadow(elevation = 6.dp, shape = CircleShape)
           .background(MaterialTheme.colorScheme.primaryContainer, shape = CircleShape)
@@ -1447,7 +1556,9 @@ fun MainScreen(
             Column(
               modifier = Modifier.fillMaxSize()
             ) {
-              Column {
+              Column(
+                modifier = Modifier.weight(1f)
+              ) {
                 Row(
                   modifier = Modifier
                     .fillMaxWidth()
@@ -1501,17 +1612,32 @@ fun MainScreen(
                   horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                   Icon(
-                    imageVector = Icons.Filled.Info,
+                    imageVector = Icons.Filled.Lock,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(24.dp)
                   )
                   Text(
-                    text = "درج اطلاعات حساب کاربری",
+                    text = "مدیریت رمز های عبور",
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSurface
                   )
                 }
+              }
+
+              // Drawer Footer with Version text
+              Divider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 8.dp))
+              Box(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(vertical = 8.dp),
+                contentAlignment = Alignment.Center
+              ) {
+                Text(
+                  text = "نسخه V1.1.1",
+                  style = MaterialTheme.typography.labelMedium,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                )
               }
             }
           }
@@ -2111,7 +2237,8 @@ fun FloatingCredentialsMenu(
 class WebAppInterface(
   private val onShowCredentials: () -> Unit,
   private val onNewMessage: (() -> Unit)? = null,
-  private val onNewMessageWithDetails: ((String, String) -> Unit)? = null
+  private val onNewMessageWithDetails: ((String, String) -> Unit)? = null,
+  private val onWebThemeDetected: ((String) -> Unit)? = null
 ) {
   @JavascriptInterface
   fun showCredentials() {
@@ -2126,6 +2253,11 @@ class WebAppInterface(
   @JavascriptInterface
   fun onNewMessageWithDetails(title: String?, body: String?) {
     onNewMessageWithDetails?.invoke(title ?: "", body ?: "")
+  }
+
+  @JavascriptInterface
+  fun onWebThemeDetected(theme: String?) {
+    onWebThemeDetected?.invoke(theme ?: "light")
   }
 }
 
