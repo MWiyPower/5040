@@ -33,6 +33,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColor
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
@@ -215,40 +216,52 @@ private const val JS_NOTIFICATION_AND_THEME = "javascript:(function() { " +
     "        var hints = document.querySelectorAll('.panel-item-hint'); " +
     "        for (var i = 0; i < hints.length; i++) { " +
     "          var hint = hints[i]; " +
-    "          if (hint.textContent && hint.textContent.trim().toLowerCase() === 'dark mode') { " +
+    "          var txt = (hint.textContent || hint.innerText || '').trim().toLowerCase(); " +
+    "          if (txt === 'dark mode' || txt.indexOf('dark mode') !== -1 || txt.indexOf('dark_mode') !== -1) { " +
     "            var parent = hint.closest('.panel-item'); " +
     "            if (parent) { " +
     "              parent.style.setProperty('display', 'none', 'important'); " +
     "            } " +
     "          } " +
     "        } " +
+    "        var items = document.querySelectorAll('.panel-item, .panel-item-value'); " +
+    "        for (var j = 0; j < items.length; j++) { " +
+    "          var el = items[j]; " +
+    "          var elTxt = (el.textContent || el.innerText || '').trim().toLowerCase(); " +
+    "          if (elTxt.indexOf('dark mode') !== -1 || elTxt.indexOf('dark_mode') !== -1) { " +
+    "            el.style.setProperty('display', 'none', 'important'); " +
+    "          } " +
+    "        } " +
     "      } catch(e) {} " +
-    "      var imgEl = document.querySelector('.avatar img'); " +
-    "      var avatarUrl = ''; " +
-    "      if (imgEl && imgEl.src) { " +
-    "        avatarUrl = imgEl.src; " +
-    "      } else { " +
-    "        var avDiv = document.querySelector('.avatar'); " +
-    "        if (avDiv) { " +
-    "          var bg = avDiv.style.backgroundImage; " +
-    "          if (bg && bg.indexOf('url') !== -1) { " +
-    "            var match = bg.match(/url\\s*\\(\\s*['\"]?([^'\"]+)['\"]?\\s*\\)/); " +
-    "            if (match && match[1]) { " +
-    "              avatarUrl = match[1]; " +
+    "      try { " +
+    "        var imgEl = document.querySelector('.avatar img'); " +
+    "        var avatarUrl = ''; " +
+    "        if (imgEl && imgEl.src) { " +
+    "          avatarUrl = imgEl.src; " +
+    "        } else { " +
+    "          var avDiv = document.querySelector('.avatar'); " +
+    "          if (avDiv) { " +
+    "            var bg = avDiv.style.backgroundImage; " +
+    "            if (bg && bg.indexOf('url') !== -1) { " +
+    "              var match = bg.match(/url\\s*\\(\\s*['\"]?([^'\"]+)['\"]?\\s*\\)/); " +
+    "              if (match && match[1]) { " +
+    "                avatarUrl = match[1]; " +
+    "              } " +
     "            } " +
     "          } " +
     "        } " +
-    "      } " +
-    "      var nameEl = document.querySelector('.welcomeName'); " +
-    "      var fullName = ''; " +
-    "      if (nameEl) { " +
-    "        fullName = nameEl.textContent || nameEl.innerText || ''; " +
-    "      } " +
-    "      if (window.AndroidApp && window.AndroidApp.onUserProfileDetected && (fullName || avatarUrl)) { " +
-    "        window.AndroidApp.onUserProfileDetected(fullName, avatarUrl); " +
-    "      } " +
+    "        var nameEl = document.querySelector('.welcomeName'); " +
+    "        var fullName = ''; " +
+    "        if (nameEl) { " +
+    "          fullName = nameEl.textContent || nameEl.innerText || ''; " +
+    "        } " +
+    "        if (window.AndroidApp && window.AndroidApp.onUserProfileDetected && (fullName || avatarUrl)) { " +
+    "          window.AndroidApp.onUserProfileDetected(fullName, avatarUrl); " +
+    "        } " +
+    "      } catch(e) {} " +
     "    }; " +
     "    checkProfile(); " +
+    "    setInterval(checkProfile, 500); " +
     "    var profileObserver = new MutationObserver(checkProfile); " +
     "    profileObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true }); " +
     "  } catch(e) {} " +
@@ -301,6 +314,8 @@ class MainActivity : ComponentActivity() {
 
   companion object {
     var isAppInForeground = false
+    var openChatTrigger by mutableStateOf(false)
+    var isSystemDarkTheme = false
   }
 
   private var filePathCallback: ValueCallback<Array<Uri>>? = null
@@ -364,6 +379,18 @@ class MainActivity : ComponentActivity() {
     voipManager = VoipManager(applicationContext)
     handleVoipIntent(intent)
 
+    // Start background chat notification service
+    try {
+      ChatNotificationService.start(applicationContext)
+    } catch (e: Exception) {
+      e.printStackTrace()
+    }
+
+    if (intent != null && intent.getBooleanExtra("open_chat", false)) {
+      openChatTrigger = true
+      intent.removeExtra("open_chat")
+    }
+
     enableEdgeToEdge()
     setContent {
       MyApplicationTheme {
@@ -416,6 +443,10 @@ class MainActivity : ComponentActivity() {
     super.onNewIntent(intent)
     setIntent(intent)
     handleVoipIntent(intent)
+    if (intent.getBooleanExtra("open_chat", false)) {
+      openChatTrigger = true
+      intent.removeExtra("open_chat")
+    }
   }
 
   private fun handleVoipIntent(intent: Intent?) {
@@ -472,7 +503,7 @@ class MainActivity : ComponentActivity() {
   }
 }
 
-private fun showSystemNotification(context: Context, title: String, body: String) {
+fun showSystemNotification(context: Context, title: String, body: String) {
   val channelId = "chat_notifications_channel"
   val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
 
@@ -489,6 +520,7 @@ private fun showSystemNotification(context: Context, title: String, body: String
 
   val intent = Intent(context, MainActivity::class.java).apply {
     flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+    putExtra("open_chat", true)
   }
   val pendingIntent = android.app.PendingIntent.getActivity(
     context,
@@ -609,6 +641,7 @@ fun MainScreen(
   onPermissionRequest: (PermissionRequest) -> Unit
 ) {
   val systemDark = isSystemInDarkTheme()
+  MainActivity.isSystemDarkTheme = systemDark
   var isMainLoaded by remember { mutableStateOf(false) }
   var isChatLoaded by remember { mutableStateOf(false) }
 
@@ -629,7 +662,23 @@ fun MainScreen(
   var userFullName by remember { mutableStateOf<String?>(null) }
   var userAvatarUrl by remember { mutableStateOf<String?>(null) }
 
+  LaunchedEffect(MainActivity.openChatTrigger) {
+    if (MainActivity.openChatTrigger) {
+      chatExpanded = true
+      chatInitialized = true
+      MainActivity.openChatTrigger = false
+    }
+  }
+
   val context = LocalContext.current
+  val versionName = remember {
+    try {
+      val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+      pInfo.versionName ?: "1.1.2"
+    } catch (e: Exception) {
+      "1.1.2"
+    }
+  }
   val voipCallState by voipManager.callState.collectAsState()
   val voipCallDuration by voipManager.callDuration.collectAsState()
 
@@ -932,7 +981,7 @@ fun MainScreen(
           super.onPageStarted(view, url, favicon)
           view?.loadUrl(JS_PERSIST_SESSION)
           
-          val isSystemDark = systemDark
+          val isSystemDark = MainActivity.isSystemDarkTheme
           val earlyThemeJs = "javascript:(function() { " +
               "try { " +
               "  var wantDark = $isSystemDark; " +
@@ -979,7 +1028,7 @@ fun MainScreen(
           CookieManager.getInstance().flush()
           
           // Sync system dark theme to WebView localStorage
-          val isSystemDark = systemDark
+          val isSystemDark = MainActivity.isSystemDarkTheme
           val themeJs = "javascript:(function() { " +
               "try { " +
               "  var wantDark = $isSystemDark; " +
@@ -1179,7 +1228,7 @@ fun MainScreen(
           super.onPageStarted(view, url, favicon)
           view?.loadUrl(JS_PERSIST_SESSION)
           
-          val isSystemDark = systemDark
+          val isSystemDark = MainActivity.isSystemDarkTheme
           val earlyThemeJs = "javascript:(function() { " +
               "try { " +
               "  var wantDark = $isSystemDark; " +
@@ -1226,7 +1275,7 @@ fun MainScreen(
           CookieManager.getInstance().flush()
           
           // Sync system dark theme to WebView localStorage
-          val isSystemDark = systemDark
+          val isSystemDark = MainActivity.isSystemDarkTheme
           val themeJs = "javascript:(function() { " +
               "try { " +
               "  var wantDark = $isSystemDark; " +
@@ -1608,6 +1657,19 @@ fun MainScreen(
         if (chatExpanded) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onPrimaryContainer
       }
 
+      val iconBlinkTransition = androidx.compose.animation.core.rememberInfiniteTransition(label = "iconBlink")
+      val blinkIconColor by iconBlinkTransition.animateColor(
+        initialValue = fabIconColor,
+        targetValue = Color.Red,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+          animation = androidx.compose.animation.core.tween(durationMillis = 800, easing = androidx.compose.animation.core.LinearEasing),
+          repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
+        ),
+        label = "icon_blink_color"
+      )
+
+      val finalIconColor = if (hasNewChatMessage && !chatExpanded) blinkIconColor else fabIconColor
+
       Box(
         modifier = Modifier
           .align(AbsoluteAlignment.BottomRight)
@@ -1645,36 +1707,15 @@ fun MainScreen(
             if (chatExpanded) {
               PanelLogoIcon(
                 modifier = Modifier.size(24.dp),
-                color = fabIconColor
+                color = finalIconColor
               )
             } else {
               ChatLogoIcon(
                 modifier = Modifier.size(24.dp),
-                color = fabIconColor
+                color = finalIconColor
               )
             }
           }
-        }
-
-        if (hasNewChatMessage && !chatExpanded) {
-          val infiniteTransition = androidx.compose.animation.core.rememberInfiniteTransition(label = "blink")
-          val blinkAlpha by infiniteTransition.animateFloat(
-            initialValue = 0.2f,
-            targetValue = 1.0f,
-            animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-              animation = androidx.compose.animation.core.tween(durationMillis = 600, easing = androidx.compose.animation.core.LinearEasing),
-              repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
-            ),
-            label = "blink_alpha"
-          )
-          Box(
-            modifier = Modifier
-              .size(14.dp)
-              .align(Alignment.TopEnd)
-              .offset(x = 2.dp, y = (-2).dp)
-              .background(androidx.compose.ui.graphics.Color.Red.copy(alpha = blinkAlpha), shape = CircleShape)
-              .border(1.5.dp, androidx.compose.ui.graphics.Color.White, CircleShape)
-          )
         }
       }
 
@@ -1706,18 +1747,6 @@ fun MainScreen(
 
       if (showVoipSheet) {
         VoipDialog(
-          voipManager = voipManager,
-          onDismiss = { showVoipSheet = false }
-        )
-      }
-
-      if (showSettingsDialog) {
-        SettingsDialog(
-          voipManager = voipManager,
-          onDismiss = { showSettingsDialog = false }
-        )
-      }
-
       // Right Sliding Drawer Menu Overlay
       AnimatedVisibility(
         visible = isDrawerOpen,
@@ -1739,155 +1768,306 @@ fun MainScreen(
             Box(
               modifier = Modifier
                 .fillMaxHeight()
-                .width(280.dp)
+                .width(290.dp)
                 .background(MaterialTheme.colorScheme.surface)
                 .clickable(enabled = true, onClick = {}) // prevent click-through
-                .padding(16.dp)
+                .padding(20.dp)
             ) {
               Column(
                 modifier = Modifier.fillMaxSize()
               ) {
+                // Drawer Content Header (User Info / Quick Info)
                 Column(
                   modifier = Modifier.weight(1f)
                 ) {
-                  if (userFullName == null) {
+                  CompositionLocalProvider(androidx.compose.ui.platform.LocalLayoutDirection provides androidx.compose.ui.unit.LayoutDirection.Rtl) {
+                    if (userFullName == null) {
+                      Row(
+                        modifier = Modifier
+                          .fillMaxWidth()
+                          .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f), shape = RoundedCornerShape(12.dp))
+                          .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                      ) {
+                        androidx.compose.material3.CircularProgressIndicator(
+                          modifier = Modifier.size(24.dp),
+                          color = MaterialTheme.colorScheme.primary,
+                          strokeWidth = 2.5.dp
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                          text = "در حال بارگذاری اطلاعات...",
+                          style = MaterialTheme.typography.bodyMedium,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                      }
+                    } else {
+                      // User info parse logic
+                      val rawName = userFullName ?: ""
+                      val trimmedName = rawName.trim()
+                      var suffix = ""
+                      var displayName = trimmedName
+
+                      if (trimmedName.endsWith("RW", ignoreCase = true)) {
+                        suffix = "RW"
+                        displayName = trimmedName.substring(0, trimmedName.length - 2).trim()
+                      } else if (trimmedName.endsWith("NP", ignoreCase = true)) {
+                        suffix = "NP"
+                        displayName = trimmedName.substring(0, trimmedName.length - 2).trim()
+                      } else if (trimmedName.endsWith("VP", ignoreCase = true)) {
+                        suffix = "VP"
+                        displayName = trimmedName.substring(0, trimmedName.length - 2).trim()
+                      }
+
+                      val roleText = when (suffix.uppercase()) {
+                        "RW" -> "دور کار"
+                        "NP" -> "حضوری"
+                        "VP" -> "لیدر"
+                        else -> "پرسنل"
+                      }
+
+                      val displayTitle = if (displayName.isNotEmpty()) displayName else "کاربر گرامی"
+                      val displaySubtitle = if (roleText.isNotEmpty()) roleText else "منوی دسترسی سریع"
+
+                      // High-fidelity User Card
+                      Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                          containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                        )
+                      ) {
+                        Row(
+                          modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                          verticalAlignment = Alignment.CenterVertically
+                        ) {
+                          Box(
+                            modifier = Modifier
+                              .size(44.dp)
+                              .background(MaterialTheme.colorScheme.primary, shape = CircleShape),
+                            contentAlignment = Alignment.Center
+                          ) {
+                            Icon(
+                              imageVector = Icons.Filled.Person,
+                              contentDescription = "تصویر پروفایل",
+                              tint = MaterialTheme.colorScheme.onPrimary,
+                              modifier = Modifier.size(24.dp)
+                            )
+                          }
+                          Spacer(modifier = Modifier.width(12.dp))
+                          Column {
+                            Text(
+                              text = displayTitle,
+                              style = MaterialTheme.typography.titleMedium,
+                              color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            // Styled Badge for Role
+                            Box(
+                              modifier = Modifier
+                                .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f), shape = RoundedCornerShape(6.dp))
+                                .padding(horizontal = 8.dp, y = 2.dp)
+                            ) {
+                              Text(
+                                text = displaySubtitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.secondary
+                              )
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                      text = "منوی دسترسی سریع",
+                      style = MaterialTheme.typography.labelMedium,
+                      color = MaterialTheme.colorScheme.primary,
+                      modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp)
+                    )
+
+                    // Navigation Menu Options
+                    // Option 1: Main Panel
                     Row(
                       modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 12.dp),
-                      verticalAlignment = Alignment.CenterVertically
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                          if (!chatExpanded) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                          else Color.Transparent
+                        )
+                        .clickable {
+                          chatExpanded = false
+                          isDrawerOpen = false
+                        }
+                        .padding(vertical = 12.dp, horizontal = 12.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                      androidx.compose.material3.CircularProgressIndicator(
-                        modifier = Modifier.size(28.dp),
-                        color = MaterialTheme.colorScheme.primary,
-                        strokeWidth = 3.dp
+                      Icon(
+                        imageVector = Icons.Filled.Home,
+                        contentDescription = null,
+                        tint = if (!chatExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(24.dp)
                       )
-                      Spacer(modifier = Modifier.width(12.dp))
                       Text(
-                        text = "در حال بارگذاری اطلاعات...",
+                        text = "پنل کاربری (صفحه اصلی)",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = if (!chatExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                      )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    // Option 2: Messenger
+                    Row(
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                          if (chatExpanded) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                          else Color.Transparent
+                        )
+                        .clickable {
+                          chatExpanded = true
+                          chatInitialized = true
+                          isDrawerOpen = false
+                        }
+                        .padding(vertical = 12.dp, horizontal = 12.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                      Box(contentAlignment = Alignment.TopEnd) {
+                        Icon(
+                          imageVector = Icons.Filled.Email,
+                          contentDescription = null,
+                          tint = if (chatExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                          modifier = Modifier.size(24.dp)
+                        )
+                        if (hasNewChatMessage && !chatExpanded) {
+                          Box(
+                            modifier = Modifier
+                              .size(8.dp)
+                              .background(Color.Red, shape = CircleShape)
+                          )
+                        }
+                      }
+                      Text(
+                        text = "پیام‌رسان (چت ۵۰۴۰)",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = if (chatExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                      )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    // Option 3: Passwords
+                    Row(
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable {
+                          showFullPasswordManager = true
+                          isDrawerOpen = false
+                        }
+                        .padding(vertical = 12.dp, horizontal = 12.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                      Icon(
+                        imageVector = Icons.Filled.Lock,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(24.dp)
+                      )
+                      Text(
+                        text = "مدیریت رمز های عبور",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                      )
+                    }
+
+                    Divider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 14.dp))
+
+                    Text(
+                      text = "اطلاعات سیستم",
+                      style = MaterialTheme.typography.labelMedium,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                      modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp)
+                    )
+
+                    // Info Row 1: Connection Status
+                    Row(
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 10.dp, horizontal = 12.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                      Box(
+                        modifier = Modifier
+                          .size(10.dp)
+                          .background(
+                            if (isOnlineState) Color(0xFF4CAF50) else Color(0xFFF44336),
+                            shape = CircleShape
+                          )
+                      )
+                      Text(
+                        text = if (isOnlineState) "برقراری ارتباط: متصل" else "برقراری ارتباط: قطع شد",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                       )
                     }
-                  } else {
-                    // User info parse logic
-                    val rawName = userFullName ?: ""
-                    val trimmedName = rawName.trim()
-                    var suffix = ""
-                    var displayName = trimmedName
 
-                    if (trimmedName.endsWith("RW", ignoreCase = true)) {
-                        suffix = "RW"
-                        displayName = trimmedName.substring(0, trimmedName.length - 2).trim()
-                    } else if (trimmedName.endsWith("NP", ignoreCase = true)) {
-                        suffix = "NP"
-                        displayName = trimmedName.substring(0, trimmedName.length - 2).trim()
-                    } else if (trimmedName.endsWith("VP", ignoreCase = true)) {
-                        suffix = "VP"
-                        displayName = trimmedName.substring(0, trimmedName.length - 2).trim()
-                    }
-
-                    val roleText = when (suffix.uppercase()) {
-                        "RW" -> "دور کار"
-                        "NP" -> "حضوری"
-                        "VP" -> "لیدر"
-                        else -> ""
-                    }
-
-                    val displayTitle = if (displayName.isNotEmpty()) displayName else "کاربر گرامی"
-                    val displaySubtitle = if (roleText.isNotEmpty()) roleText else "منوی دسترسی سریع"
-
+                    // Info Row 2: Theme Status
                     Row(
                       modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 12.dp),
-                      verticalAlignment = Alignment.CenterVertically
+                        .padding(vertical = 10.dp, horizontal = 12.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                      Box(
-                        modifier = Modifier
-                          .size(40.dp)
-                          .background(MaterialTheme.colorScheme.primaryContainer, shape = CircleShape),
-                        contentAlignment = Alignment.Center
-                      ) {
-                        if (!userAvatarUrl.isNullOrEmpty()) {
-                          AsyncImage(
-                            model = userAvatarUrl,
-                            contentDescription = "تصویر پروفایل",
-                            modifier = Modifier
-                              .size(40.dp)
-                              .clip(CircleShape),
-                            contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                          )
-                        } else {
-                          Icon(
-                            imageVector = Icons.Filled.Person,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.size(22.dp)
-                          )
-                        }
-                      }
-                      Spacer(modifier = Modifier.width(12.dp))
-                      Column {
-                        Text(
-                          text = displayTitle,
-                          style = MaterialTheme.typography.titleMedium,
-                          color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                          text = displaySubtitle,
-                          style = MaterialTheme.typography.bodySmall,
-                          color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                      }
+                      Icon(
+                        imageVector = Icons.Filled.Settings,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        modifier = Modifier.size(18.dp)
+                      )
+                      Text(
+                        text = if (MainActivity.isSystemDarkTheme) "حالت تاریک سیستم: فعال" else "حالت تاریک سیستم: غیرفعال",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                      )
                     }
-                  }
-
-                  Divider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 8.dp))
-
-                  // VoIP features are temporarily disabled
-
-
-                  // Credentials Item
-                  Row(
-                    modifier = Modifier
-                      .fillMaxWidth()
-                      .clip(MaterialTheme.shapes.medium)
-                      .clickable {
-                        showFullPasswordManager = true
-                        isDrawerOpen = false
-                      }
-                      .padding(vertical = 12.dp, horizontal = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                  ) {
-                    Icon(
-                      imageVector = Icons.Filled.Lock,
-                      contentDescription = null,
-                      tint = MaterialTheme.colorScheme.primary,
-                      modifier = Modifier.size(24.dp)
-                    )
-                    Text(
-                      text = "مدیریت رمز های عبور",
-                      style = MaterialTheme.typography.titleSmall,
-                      color = MaterialTheme.colorScheme.onSurface
-                    )
                   }
                 }
 
-                // Drawer Footer with Version text
-                Divider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 8.dp))
-                Box(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                  contentAlignment = Alignment.Center
-                ) {
-                  Text(
-                    text = "V1.1.2",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                  )
+                // Drawer Footer with Version text (RTL as well)
+                CompositionLocalProvider(androidx.compose.ui.platform.LocalLayoutDirection provides androidx.compose.ui.unit.LayoutDirection.Rtl) {
+                  Divider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 8.dp))
+                  Row(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                  ) {
+                    Icon(
+                      imageVector = Icons.Filled.Info,
+                      contentDescription = null,
+                      tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                      modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                      text = "نسخه $versionName",
+                      style = MaterialTheme.typography.labelMedium,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
+                  }
                 }
               }
             }
