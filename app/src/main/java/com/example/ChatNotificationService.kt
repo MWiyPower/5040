@@ -28,10 +28,10 @@ class ChatNotificationService : Service() {
 
         fun start(context: Context) {
             val intent = Intent(context, ChatNotificationService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
+            try {
                 context.startService(intent)
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
 
@@ -45,9 +45,6 @@ class ChatNotificationService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
-        startForeground(NOTIFICATION_ID, createNotification("آماده دریافت پیام...", "برنامه در پس‌زمینه فعال است"))
-
         // Create WebView on the Main Thread
         handler.post {
             initWebView()

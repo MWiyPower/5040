@@ -468,6 +468,11 @@ class MainActivity : ComponentActivity() {
       voipManager.isAppInForeground = true
     }
     try {
+      ChatNotificationService.stop(applicationContext)
+    } catch (e: Exception) {
+      e.printStackTrace()
+    }
+    try {
       if (simCallReceiver == null) {
         simCallReceiver = SimCallReceiver()
       }
@@ -487,6 +492,11 @@ class MainActivity : ComponentActivity() {
     isAppInForeground = false
     if (::voipManager.isInitialized) {
       voipManager.isAppInForeground = false
+    }
+    try {
+      ChatNotificationService.start(applicationContext)
+    } catch (e: Exception) {
+      e.printStackTrace()
     }
     try {
       simCallReceiver?.let {
@@ -674,9 +684,9 @@ fun MainScreen(
   val versionName = remember {
     try {
       val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-      pInfo.versionName ?: "1.1.2"
+      pInfo.versionName ?: "1.1.3"
     } catch (e: Exception) {
-      "1.1.2"
+      "1.1.3"
     }
   }
   val voipCallState by voipManager.callState.collectAsState()
@@ -1745,8 +1755,6 @@ fun MainScreen(
       // Persistent connection status indicator capsule temporarily removed as requested
 
 
-      if (showVoipSheet) {
-        VoipDialog(
       // Right Sliding Drawer Menu Overlay
       AnimatedVisibility(
         visible = isDrawerOpen,
@@ -1868,7 +1876,7 @@ fun MainScreen(
                             Box(
                               modifier = Modifier
                                 .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f), shape = RoundedCornerShape(6.dp))
-                                .padding(horizontal = 8.dp, y = 2.dp)
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
                             ) {
                               Text(
                                 text = displaySubtitle,
@@ -1881,112 +1889,32 @@ fun MainScreen(
                       }
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                      text = "منوی دسترسی سریع",
-                      style = MaterialTheme.typography.labelMedium,
-                      color = MaterialTheme.colorScheme.primary,
-                      modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp)
-                    )
+                    Spacer(modifier = Modifier.height(24.dp))
 
-                    // Navigation Menu Options
-                    // Option 1: Main Panel
+                    // Prominent Option: Password Manager
                     Row(
                       modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(
-                          if (!chatExpanded) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                          else Color.Transparent
-                        )
-                        .clickable {
-                          chatExpanded = false
-                          isDrawerOpen = false
-                        }
-                        .padding(vertical = 12.dp, horizontal = 12.dp),
-                      verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                      Icon(
-                        imageVector = Icons.Filled.Home,
-                        contentDescription = null,
-                        tint = if (!chatExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(24.dp)
-                      )
-                      Text(
-                        text = "پنل کاربری (صفحه اصلی)",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = if (!chatExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                      )
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    // Option 2: Messenger
-                    Row(
-                      modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(
-                          if (chatExpanded) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                          else Color.Transparent
-                        )
-                        .clickable {
-                          chatExpanded = true
-                          chatInitialized = true
-                          isDrawerOpen = false
-                        }
-                        .padding(vertical = 12.dp, horizontal = 12.dp),
-                      verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                      Box(contentAlignment = Alignment.TopEnd) {
-                        Icon(
-                          imageVector = Icons.Filled.Email,
-                          contentDescription = null,
-                          tint = if (chatExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                          modifier = Modifier.size(24.dp)
-                        )
-                        if (hasNewChatMessage && !chatExpanded) {
-                          Box(
-                            modifier = Modifier
-                              .size(8.dp)
-                              .background(Color.Red, shape = CircleShape)
-                          )
-                        }
-                      }
-                      Text(
-                        text = "پیام‌رسان (چت ۵۰۴۰)",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = if (chatExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                      )
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    // Option 3: Passwords
-                    Row(
-                      modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
                         .clickable {
                           showFullPasswordManager = true
                           isDrawerOpen = false
                         }
-                        .padding(vertical = 12.dp, horizontal = 12.dp),
+                        .padding(vertical = 14.dp, horizontal = 16.dp),
                       verticalAlignment = Alignment.CenterVertically,
                       horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                       Icon(
                         imageVector = Icons.Filled.Lock,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(24.dp)
                       )
                       Text(
                         text = "مدیریت رمز های عبور",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary
                       )
                     }
 
