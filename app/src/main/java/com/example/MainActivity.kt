@@ -210,14 +210,28 @@ private const val JS_NOTIFICATION_AND_THEME = "javascript:(function() { " +
     "    if (directTheme) { " +
     "      currentTheme = directTheme; " +
     "    } " +
+    "    var isDark = false; " +
     "    if (document.documentElement.classList.contains('dark') || " +
+    "        document.body.classList.contains('dark') || " +
     "        document.documentElement.getAttribute('data-theme') === 'dark' || " +
-    "        document.querySelector('link[href*=\"dark\"]') || " +
-    "        (window.getComputedStyle && window.getComputedStyle(document.body).backgroundColor === 'rgb(0, 0, 0)') || " +
-    "        (window.getComputedStyle && window.getComputedStyle(document.documentElement).backgroundColor === 'rgb(0, 0, 0)') || " +
-    "        (window.getComputedStyle && (window.getComputedStyle(document.body).backgroundColor.indexOf('rgb(1') === 0 || window.getComputedStyle(document.body).backgroundColor.indexOf('rgb(2') === 0 || window.getComputedStyle(document.body).backgroundColor.indexOf('rgb(3') === 0))) { " +
-    "      currentTheme = 'dark'; " +
+    "        document.body.getAttribute('data-theme') === 'dark' || " +
+    "        (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)) { " +
+    "      isDark = true; " +
     "    } " +
+    "    if (!isDark && window.getComputedStyle) { " +
+    "      var bodyBg = window.getComputedStyle(document.body).backgroundColor; " +
+    "      var docBg = window.getComputedStyle(document.documentElement).backgroundColor; " +
+    "      var bgEl = bodyBg || docBg; " +
+    "      if (bgEl) { " +
+    "        var m = bgEl.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/); " +
+    "        if (m) { " +
+    "          var r = parseInt(m[1]), g = parseInt(m[2]), b = parseInt(m[3]); " +
+    "          var brightness = (r * 299 + g * 587 + b * 114) / 1000; " +
+    "          if (brightness < 100) { isDark = true; } " +
+    "        } " +
+    "      } " +
+    "    } " +
+    "    if (isDark) { currentTheme = 'dark'; } " +
     "    if (window.AndroidApp && window.AndroidApp.onWebThemeDetected) { " +
     "      window.AndroidApp.onWebThemeDetected(currentTheme); " +
     "    } " +
@@ -565,7 +579,9 @@ class CircularRevealShape(
     if (progress <= 0f) {
       return Outline.Generic(Path())
     }
-    if (progress >= 0.96f) {
+    // Boost reveal progress by 1.3x so it fully opens earlier (at ~0.77 progress)
+    val revealProgress = (progress * 1.3f).coerceIn(0f, 1f)
+    if (revealProgress >= 1f || progress >= 0.90f) {
       return Outline.Rectangle(Rect(0f, 0f, size.width, size.height))
     }
     val center = if (centerOffset == Offset.Unspecified || centerOffset == Offset.Zero) {
@@ -576,8 +592,8 @@ class CircularRevealShape(
     val maxRadius = kotlin.math.hypot(
       kotlin.math.max(center.x, size.width - center.x),
       kotlin.math.max(center.y, size.height - center.y)
-    )
-    val radius = maxRadius * progress
+    ) * 1.2f // Add 20% buffer to make sure it covers the screen corners smoothly
+    val radius = maxRadius * revealProgress
     val path = Path().apply {
       addOval(
         Rect(
@@ -647,6 +663,7 @@ private fun configureWebViewSettings(webView: WebView) {
       allowFileAccess = true
       allowContentAccess = true
       javaScriptCanOpenWindowsAutomatically = true
+      mediaPlaybackRequiresUserGesture = false
       saveFormData = true
       loadsImagesAutomatically = true
       blockNetworkImage = false
@@ -734,7 +751,7 @@ private fun formatTime(ms: Int): String {
   val totalSecs = ms / 1000
   val mins = totalSecs / 60
   val secs = totalSecs % 60
-  return String.format("%02d:%02d", mins, secs)
+  return String.format(java.util.Locale.US, "%02d:%02d", mins, secs)
 }
 
 private fun downloadFile(
@@ -826,6 +843,7 @@ fun MainScreen(
   var mainWebViewRef by remember { mutableStateOf<WebView?>(null) }
   var chatWebViewRef by remember { mutableStateOf<WebView?>(null) }
   var isMainLoaded by remember { mutableStateOf(false) }
+  var loadingMessage by remember { mutableStateOf("در حال ورود به پنل...") }
   var isChatLoaded by remember { mutableStateOf(false) }
  
   var chatExpanded by remember { mutableStateOf(false) }
@@ -996,29 +1014,30 @@ fun MainScreen(
     }
   }
 
+  var appUpdateState by remember { mutableStateOf<AppUpdateState>(AppUpdateState.CheckingConfig) }
+
   val isWebThemeDark = (detectedWebTheme == "dark")
-  LaunchedEffect(chatExpanded, isWebThemeDark) {
-    val window = (context as? android.app.Activity)?.window
-    if (window != null) {
-      val viewLocal = window.decorView
-      val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, viewLocal)
-      if (chatExpanded) {
-        if (isWebThemeDark) {
-          window.statusBarColor = android.graphics.Color.parseColor("#1E1E1E")
-          insetsController.isAppearanceLightStatusBars = false
+  LaunchedEffect(chatExpanded, isWebThemeDark, appUpdateState) {
+    if (appUpdateState == AppUpdateState.Idle) {
+      val window = (context as? android.app.Activity)?.window
+      if (window != null) {
+        val viewLocal = window.decorView
+        val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, viewLocal)
+        if (chatExpanded) {
+          if (isWebThemeDark) {
+            window.statusBarColor = android.graphics.Color.parseColor("#1E1E1E")
+            insetsController.isAppearanceLightStatusBars = false
+          } else {
+            window.statusBarColor = android.graphics.Color.parseColor("#6750A4")
+            insetsController.isAppearanceLightStatusBars = false
+          }
         } else {
-          window.statusBarColor = android.graphics.Color.parseColor("#6750A4")
-          insetsController.isAppearanceLightStatusBars = false
+          window.statusBarColor = android.graphics.Color.WHITE
+          insetsController.isAppearanceLightStatusBars = true
         }
-      } else {
-        window.statusBarColor = android.graphics.Color.WHITE
-        insetsController.isAppearanceLightStatusBars = true
       }
     }
   }
-
-
-  var appUpdateState by remember { mutableStateOf<AppUpdateState>(AppUpdateState.CheckingConfig) }
 
   val startupPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
     contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -1255,6 +1274,11 @@ fun MainScreen(
       webViewClient = object : WebViewClient() {
         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
           super.onPageStarted(view, url, favicon)
+          isMainLoaded = false
+          hasWebLoadError = false
+          val isExternal = url != null && !url.contains("5040.me")
+          loadingMessage = if (isExternal) "در حال بارگذاری" else "در حال ورود به پنل..."
+          
           val shouldPersist = url != null && (url.contains("panel.5040.me") || url.contains("chat.5040.me"))
           if (shouldPersist) {
             view?.loadUrl(JS_PERSIST_SESSION)
@@ -1272,6 +1296,10 @@ fun MainScreen(
           }
           view?.loadUrl(JS_BYPASS_WARNINGS)
           view?.loadUrl(JS_NOTIFICATION_AND_THEME)
+        }
+
+        override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: android.net.http.SslError?) {
+          handler?.proceed()
         }
 
         override fun onReceivedError(
@@ -1328,7 +1356,9 @@ fun MainScreen(
         }
 
         override fun onPermissionRequest(request: PermissionRequest) {
-          onPermissionRequest(request)
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            request.grant(request.resources)
+          }
         }
 
         override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
@@ -1471,6 +1501,10 @@ fun MainScreen(
           view?.loadUrl(JS_NOTIFICATION_AND_THEME)
         }
 
+        override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: android.net.http.SslError?) {
+          handler?.proceed()
+        }
+
         override fun onReceivedError(
           view: WebView?,
           errorCode: Int,
@@ -1525,7 +1559,9 @@ fun MainScreen(
         }
 
         override fun onPermissionRequest(request: PermissionRequest) {
-          onPermissionRequest(request)
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            request.grant(request.resources)
+          }
         }
 
         override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
@@ -1835,7 +1871,7 @@ fun MainScreen(
           exit = fadeOut()
         ) {
           LoadingScreen(
-            message = "در حال ورود به پنل...",
+            message = loadingMessage,
             backgroundColor = MaterialTheme.colorScheme.background,
             contentColor = MaterialTheme.colorScheme.onBackground
           )
@@ -1850,7 +1886,7 @@ fun MainScreen(
           Modifier
         }
 
-        val isChatDark = systemDark
+        val isChatDark = isWebThemeDark
         val chatBgColor = if (isChatDark) Color(0xFF1E1E1E) else Color(0xFF6750A4)
 
         Box(
@@ -1858,7 +1894,7 @@ fun MainScreen(
             .fillMaxSize()
             .graphicsLayer {
               alpha = if (bubbleProgress > 0f) 1f else 0f
-              clip = bubbleProgress < 0.98f
+              clip = bubbleProgress < 0.90f
               if (clip) {
                 shape = CircularRevealShape(bubbleProgress, fabPosition)
               }
@@ -1891,7 +1927,7 @@ fun MainScreen(
   } // Closes AnimatedContent(targetState = isOfflineOrError)
 
       // Floating Action Button Overlay (Completely Circular, bottom-right side absolute)
-      val isChatDark = systemDark
+      val isChatDark = isWebThemeDark
       val fabBgColor = if (isChatDark) {
         if (chatExpanded) Color(0xFF2D2D2D) else Color(0xFF1E1E1E)
       } else {
@@ -1907,35 +1943,45 @@ fun MainScreen(
       val animatedFabBgColor = if (isWebThemeDark) {
         androidx.compose.ui.graphics.lerp(
           start = fabBgColor,
-          stop = Color(0xFF1E1E1E),
+          stop = Color(0xFF2D2D2D),
           fraction = bubbleProgress
         )
       } else {
-        fabBgColor
+        androidx.compose.ui.graphics.lerp(
+          start = fabBgColor,
+          stop = MaterialTheme.colorScheme.secondaryContainer,
+          fraction = bubbleProgress
+        )
       }
 
       val animatedFabIconColor = if (isWebThemeDark) {
         androidx.compose.ui.graphics.lerp(
           start = fabIconColor,
-          stop = Color.Black,
+          stop = Color.White, // Always clear white on dark expanded panel
           fraction = bubbleProgress
         )
       } else {
-        fabIconColor
+        androidx.compose.ui.graphics.lerp(
+          start = fabIconColor,
+          stop = MaterialTheme.colorScheme.onSecondaryContainer,
+          fraction = bubbleProgress
+        )
       }
 
-      val iconBlinkTransition = androidx.compose.animation.core.rememberInfiniteTransition(label = "iconBlink")
-      val blinkIconColor by iconBlinkTransition.animateColor(
-        initialValue = animatedFabIconColor,
-        targetValue = Color.Red,
+      // Background Pulsing/Blinking transition when a new message notification arrives
+      val bgBlinkTransition = androidx.compose.animation.core.rememberInfiniteTransition(label = "bgBlink")
+      val blinkBgColor by bgBlinkTransition.animateColor(
+        initialValue = animatedFabBgColor,
+        targetValue = Color(0xFFE53935), // Pulsing crimson notification background
         animationSpec = androidx.compose.animation.core.infiniteRepeatable(
           animation = androidx.compose.animation.core.tween(durationMillis = 800, easing = androidx.compose.animation.core.LinearEasing),
           repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
         ),
-        label = "icon_blink_color"
+        label = "bg_blink_color"
       )
 
-      val finalIconColor = if (hasNewChatMessage && !chatExpanded) blinkIconColor else animatedFabIconColor
+      val finalFabBgColor = if (hasNewChatMessage && !chatExpanded) blinkBgColor else animatedFabBgColor
+      val finalIconColor = if (hasNewChatMessage && !chatExpanded) Color.White else animatedFabIconColor
 
       Box(
         modifier = Modifier
@@ -1959,7 +2005,7 @@ fun MainScreen(
             .fillMaxSize()
             .shadow(elevation = 6.dp, shape = CircleShape)
             .background(
-              color = animatedFabBgColor,
+              color = finalFabBgColor,
               shape = CircleShape
             )
             .clip(CircleShape)
@@ -1990,21 +2036,29 @@ fun MainScreen(
       val menuBgColor = if (isWebThemeDark) {
         androidx.compose.ui.graphics.lerp(
           start = MaterialTheme.colorScheme.primaryContainer,
-          stop = Color(0xFF1E1E1E),
+          stop = Color(0xFF2D2D2D),
           fraction = bubbleProgress
         )
       } else {
-        MaterialTheme.colorScheme.primaryContainer
+        androidx.compose.ui.graphics.lerp(
+          start = MaterialTheme.colorScheme.primaryContainer,
+          stop = MaterialTheme.colorScheme.secondaryContainer,
+          fraction = bubbleProgress
+        )
       }
 
       val menuIconTint = if (isWebThemeDark) {
         androidx.compose.ui.graphics.lerp(
           start = MaterialTheme.colorScheme.onPrimaryContainer,
-          stop = Color.Black,
+          stop = Color.White, // Always white on dark background!
           fraction = bubbleProgress
         )
       } else {
-        MaterialTheme.colorScheme.onPrimaryContainer
+        androidx.compose.ui.graphics.lerp(
+          start = MaterialTheme.colorScheme.onPrimaryContainer,
+          stop = MaterialTheme.colorScheme.onSecondaryContainer,
+          fraction = bubbleProgress
+        )
       }
 
       Box(
@@ -2520,25 +2574,27 @@ fun MainScreen(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                Row(
-                  modifier = Modifier.fillMaxWidth(),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                  Slider(
-                    value = audioPosition.toFloat(),
-                    onValueChange = { newValue ->
-                      audioPosition = newValue.toInt()
-                      try { mediaPlayer.seekTo(audioPosition) } catch(e: Exception) {}
-                    },
-                    valueRange = 0f..audioDuration.toFloat().coerceAtLeast(1f),
-                    modifier = Modifier.weight(1f).height(16.dp),
-                    colors = SliderDefaults.colors(
-                      thumbColor = MaterialTheme.colorScheme.primary,
-                      activeTrackColor = MaterialTheme.colorScheme.primary,
-                      inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                  ) {
+                    Slider(
+                      value = audioPosition.toFloat(),
+                      onValueChange = { newValue ->
+                        audioPosition = newValue.toInt()
+                        try { mediaPlayer.seekTo(audioPosition) } catch(e: Exception) {}
+                      },
+                      valueRange = 0f..audioDuration.toFloat().coerceAtLeast(1f),
+                      modifier = Modifier.weight(1f).height(16.dp),
+                      colors = SliderDefaults.colors(
+                        thumbColor = MaterialTheme.colorScheme.primary,
+                        activeTrackColor = MaterialTheme.colorScheme.primary,
+                        inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                      )
                     )
-                  )
+                  }
                 }
 
                 Spacer(modifier = Modifier.height(6.dp))
@@ -2548,14 +2604,6 @@ fun MainScreen(
                   verticalAlignment = Alignment.CenterVertically,
                   horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                  Text(
-                    text = "${formatTime(audioPosition)} / ${formatTime(audioDuration)}",
-                    style = MaterialTheme.typography.bodySmall.copy(
-                      fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                    ),
-                    color = Color.White.copy(alpha = 0.8f)
-                  )
-
                   Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(16.dp)
@@ -2571,7 +2619,7 @@ fun MainScreen(
                         .background(Color.White.copy(alpha = 0.1f), CircleShape)
                     ) {
                       Text(
-                        text = "-۵s",
+                        text = "-5s",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
                         color = Color.White
                       )
@@ -2621,12 +2669,20 @@ fun MainScreen(
                         .background(Color.White.copy(alpha = 0.1f), CircleShape)
                     ) {
                       Text(
-                        text = "+۵s",
+                        text = "+5s",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
                         color = Color.White
                       )
                     }
                   }
+
+                  Text(
+                    text = "${formatTime(audioPosition)} / ${formatTime(audioDuration)}",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                      fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                    ),
+                    color = Color.White.copy(alpha = 0.8f)
+                  )
                 }
               }
             }
