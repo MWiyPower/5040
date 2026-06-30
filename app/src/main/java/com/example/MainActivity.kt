@@ -40,10 +40,21 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -63,12 +74,18 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import android.webkit.JavascriptInterface
@@ -109,6 +126,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import com.example.ui.theme.MyApplicationTheme
+import android.media.MediaPlayer
+import android.os.Environment
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.text.style.TextOverflow
 
 private const val JS_BYPASS_WARNINGS = "javascript:(function() { " +
     "try { " +
@@ -184,7 +206,16 @@ private const val JS_NOTIFICATION_AND_THEME = "javascript:(function() { " +
     "        currentTheme = pValue.settings.theme; " +
     "      } " +
     "    } " +
-    "    if (document.querySelector('link[href*=\"dark\"]')) { " +
+    "    var directTheme = localStorage.getItem('theme'); " +
+    "    if (directTheme) { " +
+    "      currentTheme = directTheme; " +
+    "    } " +
+    "    if (document.documentElement.classList.contains('dark') || " +
+    "        document.documentElement.getAttribute('data-theme') === 'dark' || " +
+    "        document.querySelector('link[href*=\"dark\"]') || " +
+    "        (window.getComputedStyle && window.getComputedStyle(document.body).backgroundColor === 'rgb(0, 0, 0)') || " +
+    "        (window.getComputedStyle && window.getComputedStyle(document.documentElement).backgroundColor === 'rgb(0, 0, 0)') || " +
+    "        (window.getComputedStyle && (window.getComputedStyle(document.body).backgroundColor.indexOf('rgb(1') === 0 || window.getComputedStyle(document.body).backgroundColor.indexOf('rgb(2') === 0 || window.getComputedStyle(document.body).backgroundColor.indexOf('rgb(3') === 0))) { " +
     "      currentTheme = 'dark'; " +
     "    } " +
     "    if (window.AndroidApp && window.AndroidApp.onWebThemeDetected) { " +
@@ -212,27 +243,6 @@ private const val JS_NOTIFICATION_AND_THEME = "javascript:(function() { " +
     "  } catch(e) {} " +
     "  try { " +
     "    var checkProfile = function() { " +
-    "      try { " +
-    "        var hints = document.querySelectorAll('.panel-item-hint'); " +
-    "        for (var i = 0; i < hints.length; i++) { " +
-    "          var hint = hints[i]; " +
-    "          var txt = (hint.textContent || hint.innerText || '').trim().toLowerCase(); " +
-    "          if (txt === 'dark mode' || txt.indexOf('dark mode') !== -1 || txt.indexOf('dark_mode') !== -1) { " +
-    "            var parent = hint.closest('.panel-item'); " +
-    "            if (parent) { " +
-    "              parent.style.setProperty('display', 'none', 'important'); " +
-    "            } " +
-    "          } " +
-    "        } " +
-    "        var items = document.querySelectorAll('.panel-item, .panel-item-value'); " +
-    "        for (var j = 0; j < items.length; j++) { " +
-    "          var el = items[j]; " +
-    "          var elTxt = (el.textContent || el.innerText || '').trim().toLowerCase(); " +
-    "          if (elTxt.indexOf('dark mode') !== -1 || elTxt.indexOf('dark_mode') !== -1) { " +
-    "            el.style.setProperty('display', 'none', 'important'); " +
-    "          } " +
-    "        } " +
-    "      } catch(e) {} " +
     "      try { " +
     "        var imgEl = document.querySelector('.avatar img'); " +
     "        var avatarUrl = ''; " +
@@ -320,8 +330,6 @@ class MainActivity : ComponentActivity() {
 
   private var filePathCallback: ValueCallback<Array<Uri>>? = null
   private var permissionRequestCallback: PermissionRequest? = null
-  private var simCallReceiver: SimCallReceiver? = null
-  lateinit var voipManager: VoipManager
 
   private val filePickerLauncher = registerForActivityResult(
     ActivityResultContracts.StartActivityForResult()
@@ -376,8 +384,34 @@ class MainActivity : ComponentActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    voipManager = VoipManager(applicationContext)
-    handleVoipIntent(intent)
+
+    // Pre-create WebView code cache directories to prevent Chromium logcat warnings/errors
+    try {
+      val codeCacheBase = java.io.File(cacheDir, "WebView/Default/HTTP Cache/Code Cache")
+      val jsDir = java.io.File(codeCacheBase, "js")
+      if (!jsDir.exists()) {
+        jsDir.mkdirs()
+      }
+      try {
+        val keepJs = java.io.File(jsDir, ".keep")
+        if (!keepJs.exists()) {
+          keepJs.createNewFile()
+        }
+      } catch (e: Exception) {}
+
+      val wasmDir = java.io.File(codeCacheBase, "wasm")
+      if (!wasmDir.exists()) {
+        wasmDir.mkdirs()
+      }
+      try {
+        val keepWasm = java.io.File(wasmDir, ".keep")
+        if (!keepWasm.exists()) {
+          keepWasm.createNewFile()
+        }
+      } catch (e: Exception) {}
+    } catch (e: Exception) {
+      e.printStackTrace()
+    }
 
     // Start background chat notification service
     try {
@@ -396,7 +430,6 @@ class MainActivity : ComponentActivity() {
       MyApplicationTheme {
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
           MainScreen(
-            voipManager = voipManager,
             onOpenFilePicker = { callback, acceptTypes, allowMultiple ->
               filePathCallback?.onReceiveValue(null)
               filePathCallback = callback
@@ -442,46 +475,17 @@ class MainActivity : ComponentActivity() {
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     setIntent(intent)
-    handleVoipIntent(intent)
     if (intent.getBooleanExtra("open_chat", false)) {
       openChatTrigger = true
       intent.removeExtra("open_chat")
     }
   }
 
-  private fun handleVoipIntent(intent: Intent?) {
-    if (intent == null) return
-    if (intent.action == "com.example.VOIP_ACCEPT") {
-      voipManager.acceptIncomingCall()
-    } else if (intent.action == "com.example.VOIP_REJECT") {
-      voipManager.rejectIncomingCall()
-    } else if (intent.hasExtra("trigger_voip_incoming")) {
-      val num = intent.getStringExtra("trigger_voip_incoming") ?: "SERVICE"
-      voipManager.triggerIncomingCall(num)
-    }
-  }
-
   override fun onResume() {
     super.onResume()
     isAppInForeground = true
-    if (::voipManager.isInitialized) {
-      voipManager.isAppInForeground = true
-    }
     try {
       ChatNotificationService.stop(applicationContext)
-    } catch (e: Exception) {
-      e.printStackTrace()
-    }
-    try {
-      if (simCallReceiver == null) {
-        simCallReceiver = SimCallReceiver()
-      }
-      val filter = IntentFilter(android.telephony.TelephonyManager.ACTION_PHONE_STATE_CHANGED)
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        registerReceiver(simCallReceiver, filter, Context.RECEIVER_EXPORTED)
-      } else {
-        registerReceiver(simCallReceiver, filter)
-      }
     } catch (e: Exception) {
       e.printStackTrace()
     }
@@ -490,18 +494,8 @@ class MainActivity : ComponentActivity() {
   override fun onPause() {
     super.onPause()
     isAppInForeground = false
-    if (::voipManager.isInitialized) {
-      voipManager.isAppInForeground = false
-    }
     try {
       ChatNotificationService.start(applicationContext)
-    } catch (e: Exception) {
-      e.printStackTrace()
-    }
-    try {
-      simCallReceiver?.let {
-        unregisterReceiver(it)
-      }
     } catch (e: Exception) {
       e.printStackTrace()
     }
@@ -550,6 +544,14 @@ fun showSystemNotification(context: Context, title: String, body: String) {
 
   notificationManager.notify(102, notification)
 }
+
+data class DownloadStatus(
+  val fileName: String,
+  val progress: Float,
+  val isFinished: Boolean = false,
+  val isFailed: Boolean = false,
+  val localPath: String? = null
+)
 
 class CircularRevealShape(
   private val progress: Float,
@@ -609,10 +611,35 @@ private fun isOnline(context: Context): Boolean {
 
 @SuppressLint("SetJavaScriptEnabled")
 private fun configureWebViewSettings(webView: WebView) {
+  try {
+    val codeCacheBase = java.io.File(webView.context.cacheDir, "WebView/Default/HTTP Cache/Code Cache")
+    val jsDir = java.io.File(codeCacheBase, "js")
+    if (!jsDir.exists()) {
+      jsDir.mkdirs()
+    }
+    val keepJs = java.io.File(jsDir, ".keep")
+    if (!keepJs.exists()) {
+      keepJs.createNewFile()
+    }
+    val wasmDir = java.io.File(codeCacheBase, "wasm")
+    if (!wasmDir.exists()) {
+      wasmDir.mkdirs()
+    }
+    val keepWasm = java.io.File(wasmDir, ".keep")
+    if (!keepWasm.exists()) {
+      keepWasm.createNewFile()
+    }
+  } catch (e: Exception) {}
+
   webView.apply {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_YES
+      // Prevent system from waiving or killing the renderer under memory pressure
+      setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true)
     }
+    // High performance hardware accelerated rendering
+    setLayerType(View.LAYER_TYPE_HARDWARE, null)
+    
     settings.apply {
       javaScriptEnabled = true
       domStorageEnabled = true
@@ -621,6 +648,9 @@ private fun configureWebViewSettings(webView: WebView) {
       allowContentAccess = true
       javaScriptCanOpenWindowsAutomatically = true
       saveFormData = true
+      loadsImagesAutomatically = true
+      blockNetworkImage = false
+      setSupportMultipleWindows(true)
       
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
         mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
@@ -633,6 +663,23 @@ private fun configureWebViewSettings(webView: WebView) {
       useWideViewPort = true
       loadWithOverviewMode = true
       userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 7 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+      
+      // Connection and Speed Optimizations:
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        // Pre-renders hidden offscreen content for smoother scrolling and loading
+        offscreenPreRaster = true
+      }
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        // Skips external safe-browsing service check, saving connection negotiation time
+        safeBrowsingEnabled = false
+      }
+      
+      // Standard fast layout calculations
+      layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
+      
+      // High-performance database location config
+      @Suppress("DEPRECATION")
+      databasePath = context.applicationContext.getDir("databases", android.content.Context.MODE_PRIVATE).path
     }
 
     CookieManager.getInstance().apply {
@@ -644,33 +691,229 @@ private fun configureWebViewSettings(webView: WebView) {
   }
 }
 
+private fun getFileName(url: String, contentDisposition: String?, mimeType: String?): String {
+  var fileName = ""
+  if (!contentDisposition.isNullOrEmpty()) {
+    val needle = "filename="
+    val index = contentDisposition.indexOf(needle)
+    if (index != -1) {
+      fileName = contentDisposition.substring(index + needle.length).trim().replace("\"", "")
+      val semiIndex = fileName.indexOf(";")
+      if (semiIndex != -1) {
+        fileName = fileName.substring(0, semiIndex).trim()
+      }
+    }
+  }
+  if (fileName.isEmpty()) {
+    try {
+      val uri = Uri.parse(url)
+      fileName = uri.lastPathSegment ?: ""
+    } catch (e: Exception) {}
+  }
+  if (fileName.isEmpty()) {
+    fileName = "downloaded_file"
+    val ext = mimeType?.substringAfter("/") ?: "bin"
+    fileName = "$fileName.$ext"
+  }
+  return fileName.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+}
+
+private fun isAudioFile(fileName: String, mimeType: String?): Boolean {
+  val audioExts = listOf(".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac", ".amr", ".wma")
+  val lowerName = fileName.lowercase()
+  if (audioExts.any { lowerName.endsWith(it) }) {
+    return true
+  }
+  if (mimeType?.lowercase()?.startsWith("audio/") == true) {
+    return true
+  }
+  return false
+}
+
+private fun formatTime(ms: Int): String {
+  val totalSecs = ms / 1000
+  val mins = totalSecs / 60
+  val secs = totalSecs % 60
+  return String.format("%02d:%02d", mins, secs)
+}
+
+private fun downloadFile(
+  scope: kotlinx.coroutines.CoroutineScope,
+  context: Context,
+  downloadUrl: String,
+  fileName: String,
+  mimeType: String?,
+  onProgress: (Float) -> Unit,
+  onSuccess: (String) -> Unit,
+  onFailure: (Exception) -> Unit
+) {
+  scope.launch(Dispatchers.IO) {
+    try {
+      val url = java.net.URL(downloadUrl)
+      val connection = url.openConnection() as java.net.HttpURLConnection
+      connection.requestMethod = "GET"
+      connection.connectTimeout = 15000
+      connection.readTimeout = 15000
+      connection.connect()
+
+      if (connection.responseCode != java.net.HttpURLConnection.HTTP_OK) {
+        throw java.io.IOException("Server returned HTTP ${connection.responseCode}")
+      }
+
+      val fileLength = connection.contentLength
+      val input = connection.inputStream
+
+      val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+      var targetDir = java.io.File(downloadsDir, "5040P")
+      if (!targetDir.exists()) {
+        val created = targetDir.mkdirs()
+        if (!created) {
+          targetDir = java.io.File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "5040P")
+          targetDir.mkdirs()
+        }
+      }
+
+      val targetFile = java.io.File(targetDir, fileName)
+      val output = java.io.FileOutputStream(targetFile)
+
+      val data = ByteArray(4096)
+      var total: Long = 0
+      var count: Int
+      while (input.read(data).also { count = it } != -1) {
+        total += count
+        if (fileLength > 0) {
+          val progress = (total * 100 / fileLength).toFloat()
+          withContext(Dispatchers.Main) {
+            onProgress(progress)
+          }
+        }
+        output.write(data, 0, count)
+      }
+
+      output.flush()
+      output.close()
+      input.close()
+
+      try {
+        android.media.MediaScannerConnection.scanFile(
+          context,
+          arrayOf(targetFile.absolutePath),
+          arrayOf(mimeType),
+          null
+        )
+      } catch (e: Exception) {}
+
+      withContext(Dispatchers.Main) {
+        onSuccess(targetFile.absolutePath)
+      }
+    } catch (e: Exception) {
+      e.printStackTrace()
+      withContext(Dispatchers.Main) {
+        onFailure(e)
+      }
+    }
+  }
+}
+
 @Composable
 fun MainScreen(
-  voipManager: VoipManager,
   onOpenFilePicker: (ValueCallback<Array<Uri>>?, Array<String>?, Boolean) -> Unit,
   onPermissionRequest: (PermissionRequest) -> Unit
 ) {
+  val context = LocalContext.current
   val systemDark = isSystemInDarkTheme()
   MainActivity.isSystemDarkTheme = systemDark
+  var mainWebViewRef by remember { mutableStateOf<WebView?>(null) }
+  var chatWebViewRef by remember { mutableStateOf<WebView?>(null) }
   var isMainLoaded by remember { mutableStateOf(false) }
   var isChatLoaded by remember { mutableStateOf(false) }
-
+ 
   var chatExpanded by remember { mutableStateOf(false) }
   var chatInitialized by remember { mutableStateOf(false) }
   var hasNewChatMessage by remember { mutableStateOf(false) }
-
+ 
   var isOnlineState by remember { mutableStateOf(true) }
   var hasWebLoadError by remember { mutableStateOf(false) }
   var detectedWebTheme by remember { mutableStateOf("light") }
-
+ 
   var fabPosition by remember { mutableStateOf(Offset(900f, 1800f)) }
   var showCredentialsSheet by remember { mutableStateOf(false) }
   var showFullPasswordManager by remember { mutableStateOf(false) }
-  var showVoipSheet by remember { mutableStateOf(false) }
   var isDrawerOpen by remember { mutableStateOf(false) }
-  var showSettingsDialog by remember { mutableStateOf(false) }
   var userFullName by remember { mutableStateOf<String?>(null) }
   var userAvatarUrl by remember { mutableStateOf<String?>(null) }
+
+  var activeDownloadState by remember { mutableStateOf<DownloadStatus?>(null) }
+  val coroutineScope = rememberCoroutineScope()
+
+  // Floating Audio Player States
+  var audioUrl by remember { mutableStateOf<String?>(null) }
+  var audioTitle by remember { mutableStateOf<String?>(null) }
+  var isAudioPlaying by remember { mutableStateOf(false) }
+  var audioDuration by remember { mutableStateOf(0) } // in ms
+  var audioPosition by remember { mutableStateOf(0) } // in ms
+  var isAudioLoading by remember { mutableStateOf(false) }
+
+  val mediaPlayer = remember { MediaPlayer() }
+  DisposableEffect(Unit) {
+    onDispose {
+      try {
+        mediaPlayer.release()
+      } catch (e: Exception) {}
+    }
+  }
+
+  DisposableEffect(mediaPlayer) {
+    mediaPlayer.setOnCompletionListener {
+      isAudioPlaying = false
+      audioPosition = 0
+    }
+    mediaPlayer.setOnErrorListener { mp, what, extra ->
+      isAudioPlaying = false
+      isAudioLoading = false
+      true
+    }
+    mediaPlayer.setOnPreparedListener {
+      isAudioLoading = false
+      isAudioPlaying = true
+      audioDuration = mediaPlayer.duration
+      mediaPlayer.start()
+    }
+    onDispose {}
+  }
+
+  LaunchedEffect(isAudioPlaying, audioUrl) {
+    if (isAudioPlaying && audioUrl != null) {
+      while (true) {
+        try {
+          if (mediaPlayer.isPlaying) {
+            audioPosition = mediaPlayer.currentPosition
+            audioDuration = mediaPlayer.duration
+          }
+        } catch (e: Exception) {}
+        delay(250)
+      }
+    }
+  }
+
+  val playAudio: (String, String) -> Unit = { url, title ->
+    try {
+      isAudioLoading = true
+      isAudioPlaying = false
+      audioUrl = url
+      audioTitle = title
+      audioPosition = 0
+      audioDuration = 0
+      
+      mediaPlayer.reset()
+      mediaPlayer.setDataSource(context, Uri.parse(url))
+      mediaPlayer.prepareAsync()
+    } catch (e: Exception) {
+      e.printStackTrace()
+      isAudioLoading = false
+      Toast.makeText(context, "خطا در بارگذاری فایل صوتی", Toast.LENGTH_SHORT).show()
+    }
+  }
 
   LaunchedEffect(MainActivity.openChatTrigger) {
     if (MainActivity.openChatTrigger) {
@@ -680,17 +923,14 @@ fun MainScreen(
     }
   }
 
-  val context = LocalContext.current
   val versionName = remember {
     try {
       val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-      pInfo.versionName ?: "1.1.3"
+      pInfo.versionName ?: "1.1.4"
     } catch (e: Exception) {
-      "1.1.3"
+      "1.1.4"
     }
   }
-  val voipCallState by voipManager.callState.collectAsState()
-  val voipCallDuration by voipManager.callDuration.collectAsState()
 
   LaunchedEffect(context) {
     isOnlineState = isOnline(context)
@@ -698,6 +938,13 @@ fun MainScreen(
     val networkCallback = object : ConnectivityManager.NetworkCallback() {
       override fun onAvailable(network: Network) {
         isOnlineState = true
+        if (hasWebLoadError) {
+          hasWebLoadError = false
+          (context as? android.app.Activity)?.runOnUiThread {
+            mainWebViewRef?.reload()
+            chatWebViewRef?.reload()
+          }
+        }
       }
       override fun onLost(network: Network) {
         isOnlineState = false
@@ -719,18 +966,25 @@ fun MainScreen(
     targetValue = if (chatExpanded) 1f else 0f,
     animationSpec = spring(
       dampingRatio = Spring.DampingRatioLowBouncy,
-      stiffness = Spring.StiffnessLow
+      stiffness = Spring.StiffnessMediumLow
     ),
     label = "BubbleReveal"
   )
 
-  val iconRotation = 0f
+  val iconRotation by animateFloatAsState(
+    targetValue = if (chatExpanded) 180f else 0f,
+    animationSpec = spring(
+      dampingRatio = Spring.DampingRatioMediumBouncy,
+      stiffness = Spring.StiffnessMediumLow
+    ),
+    label = "IconRotation"
+  )
 
   val fabYOffset by animateDpAsState(
     targetValue = if (chatExpanded) (-48).dp else 0.dp,
     animationSpec = spring(
       dampingRatio = Spring.DampingRatioLowBouncy,
-      stiffness = Spring.StiffnessLow
+      stiffness = Spring.StiffnessMediumLow
     ),
     label = "FabYOffset"
   )
@@ -742,10 +996,28 @@ fun MainScreen(
     }
   }
 
-  var mainWebViewRef by remember { mutableStateOf<WebView?>(null) }
-  var chatWebViewRef by remember { mutableStateOf<WebView?>(null) }
+  val isWebThemeDark = (detectedWebTheme == "dark")
+  LaunchedEffect(chatExpanded, isWebThemeDark) {
+    val window = (context as? android.app.Activity)?.window
+    if (window != null) {
+      val viewLocal = window.decorView
+      val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, viewLocal)
+      if (chatExpanded) {
+        if (isWebThemeDark) {
+          window.statusBarColor = android.graphics.Color.parseColor("#1E1E1E")
+          insetsController.isAppearanceLightStatusBars = false
+        } else {
+          window.statusBarColor = android.graphics.Color.parseColor("#6750A4")
+          insetsController.isAppearanceLightStatusBars = false
+        }
+      } else {
+        window.statusBarColor = android.graphics.Color.WHITE
+        insetsController.isAppearanceLightStatusBars = true
+      }
+    }
+  }
 
-  val coroutineScope = rememberCoroutineScope()
+
   var appUpdateState by remember { mutableStateOf<AppUpdateState>(AppUpdateState.CheckingConfig) }
 
   val startupPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -822,13 +1094,7 @@ fun MainScreen(
       }
 
       val needed = mutableListOf<String>().apply {
-        add(android.Manifest.permission.READ_PHONE_STATE)
-        add(android.Manifest.permission.RECORD_AUDIO)
         add(android.Manifest.permission.RECEIVE_SMS)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-          add(android.Manifest.permission.READ_CALL_LOG)
-          add(android.Manifest.permission.ANSWER_PHONE_CALLS)
-        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
           add(android.Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -989,47 +1255,10 @@ fun MainScreen(
       webViewClient = object : WebViewClient() {
         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
           super.onPageStarted(view, url, favicon)
-          view?.loadUrl(JS_PERSIST_SESSION)
-          
-          val isSystemDark = MainActivity.isSystemDarkTheme
-          val earlyThemeJs = "javascript:(function() { " +
-              "try { " +
-              "  var wantDark = $isSystemDark; " +
-              "  var changed = false; " +
-              "  var pData = localStorage.getItem('private-data') || '{}'; " +
-              "  var pValue = JSON.parse(pData) || {}; " +
-              "  if (!pValue.settings) pValue.settings = {}; " +
-              "  var current = pValue.settings.theme || 'light'; " +
-              "  if (wantDark && current !== 'dark') { " +
-              "    pValue.settings.theme = 'dark'; " +
-              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
-              "    changed = true; " +
-              "  } else if (!wantDark && current === 'dark') { " +
-              "    pValue.settings.theme = 'light'; " +
-              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
-              "    changed = true; " +
-              "  } " +
-              "  var directTheme = localStorage.getItem('theme'); " +
-              "  if (wantDark && directTheme !== 'dark') { " +
-              "    localStorage.setItem('theme', 'dark'); " +
-              "    changed = true; " +
-              "  } else if (!wantDark && directTheme === 'dark') { " +
-              "    localStorage.setItem('theme', 'light'); " +
-              "    changed = true; " +
-              "  } " +
-              "  if (wantDark) { " +
-              "    document.documentElement.classList.add('dark'); " +
-              "    document.documentElement.setAttribute('data-theme', 'dark'); " +
-              "  } else { " +
-              "    document.documentElement.classList.remove('dark'); " +
-              "    document.documentElement.setAttribute('data-theme', 'light'); " +
-              "  } " +
-              "  if (changed) { " +
-              "    window.location.reload(); " +
-              "  } " +
-              "} catch(e) {} " +
-              "})();"
-          view?.loadUrl(earlyThemeJs)
+          val shouldPersist = url != null && (url.contains("panel.5040.me") || url.contains("chat.5040.me"))
+          if (shouldPersist) {
+            view?.loadUrl(JS_PERSIST_SESSION)
+          }
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
@@ -1037,48 +1266,10 @@ fun MainScreen(
           isMainLoaded = true
           CookieManager.getInstance().flush()
           
-          // Sync system dark theme to WebView localStorage
-          val isSystemDark = MainActivity.isSystemDarkTheme
-          val themeJs = "javascript:(function() { " +
-              "try { " +
-              "  var wantDark = $isSystemDark; " +
-              "  var changed = false; " +
-              "  var pData = localStorage.getItem('private-data') || '{}'; " +
-              "  var pValue = JSON.parse(pData) || {}; " +
-              "  if (!pValue.settings) pValue.settings = {}; " +
-              "  var current = pValue.settings.theme || 'light'; " +
-              "  if (wantDark && current !== 'dark') { " +
-              "    pValue.settings.theme = 'dark'; " +
-              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
-              "    changed = true; " +
-              "  } else if (!wantDark && current === 'dark') { " +
-              "    pValue.settings.theme = 'light'; " +
-              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
-              "    changed = true; " +
-              "  } " +
-              "  var directTheme = localStorage.getItem('theme'); " +
-              "  if (wantDark && directTheme !== 'dark') { " +
-              "    localStorage.setItem('theme', 'dark'); " +
-              "    changed = true; " +
-              "  } else if (!wantDark && directTheme === 'dark') { " +
-              "    localStorage.setItem('theme', 'light'); " +
-              "    changed = true; " +
-              "  } " +
-              "  if (wantDark) { " +
-              "    document.documentElement.classList.add('dark'); " +
-              "    document.documentElement.setAttribute('data-theme', 'dark'); " +
-              "  } else { " +
-              "    document.documentElement.classList.remove('dark'); " +
-              "    document.documentElement.setAttribute('data-theme', 'light'); " +
-              "  } " +
-              "  if (changed) { " +
-              "    window.location.reload(); " +
-              "  } " +
-              "} catch(e) {} " +
-              "})();"
-          view?.loadUrl(themeJs)
-          
-          view?.loadUrl(JS_PERSIST_SESSION)
+          val shouldPersist = url != null && (url.contains("panel.5040.me") || url.contains("chat.5040.me"))
+          if (shouldPersist) {
+            view?.loadUrl(JS_PERSIST_SESSION)
+          }
           view?.loadUrl(JS_BYPASS_WARNINGS)
           view?.loadUrl(JS_NOTIFICATION_AND_THEME)
         }
@@ -1180,6 +1371,31 @@ fun MainScreen(
         }
       }
       
+      setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
+        val fileName = getFileName(url, contentDisposition, mimetype)
+        if (isAudioFile(fileName, mimetype)) {
+          playAudio(url, fileName)
+        } else {
+          activeDownloadState = DownloadStatus(fileName, 0f)
+          downloadFile(
+            scope = coroutineScope,
+            context = context,
+            downloadUrl = url,
+            fileName = fileName,
+            mimeType = mimetype,
+            onProgress = { progress ->
+              activeDownloadState = DownloadStatus(fileName, progress)
+            },
+            onSuccess = { localPath ->
+              activeDownloadState = DownloadStatus(fileName, 100f, isFinished = true, localPath = localPath)
+            },
+            onFailure = { error ->
+              activeDownloadState = DownloadStatus(fileName, 0f, isFailed = true)
+            }
+          )
+        }
+      }
+
       mainWebViewRef = this
       loadUrl("https://panel.5040.me")
     }
@@ -1236,47 +1452,10 @@ fun MainScreen(
       webViewClient = object : WebViewClient() {
         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
           super.onPageStarted(view, url, favicon)
-          view?.loadUrl(JS_PERSIST_SESSION)
-          
-          val isSystemDark = MainActivity.isSystemDarkTheme
-          val earlyThemeJs = "javascript:(function() { " +
-              "try { " +
-              "  var wantDark = $isSystemDark; " +
-              "  var changed = false; " +
-              "  var pData = localStorage.getItem('private-data') || '{}'; " +
-              "  var pValue = JSON.parse(pData) || {}; " +
-              "  if (!pValue.settings) pValue.settings = {}; " +
-              "  var current = pValue.settings.theme || 'light'; " +
-              "  if (wantDark && current !== 'dark') { " +
-              "    pValue.settings.theme = 'dark'; " +
-              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
-              "    changed = true; " +
-              "  } else if (!wantDark && current === 'dark') { " +
-              "    pValue.settings.theme = 'light'; " +
-              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
-              "    changed = true; " +
-              "  } " +
-              "  var directTheme = localStorage.getItem('theme'); " +
-              "  if (wantDark && directTheme !== 'dark') { " +
-              "    localStorage.setItem('theme', 'dark'); " +
-              "    changed = true; " +
-              "  } else if (!wantDark && directTheme === 'dark') { " +
-              "    localStorage.setItem('theme', 'light'); " +
-              "    changed = true; " +
-              "  } " +
-              "  if (wantDark) { " +
-              "    document.documentElement.classList.add('dark'); " +
-              "    document.documentElement.setAttribute('data-theme', 'dark'); " +
-              "  } else { " +
-              "    document.documentElement.classList.remove('dark'); " +
-              "    document.documentElement.setAttribute('data-theme', 'light'); " +
-              "  } " +
-              "  if (changed) { " +
-              "    window.location.reload(); " +
-              "  } " +
-              "} catch(e) {} " +
-              "})();"
-          view?.loadUrl(earlyThemeJs)
+          val shouldPersist = url != null && (url.contains("panel.5040.me") || url.contains("chat.5040.me"))
+          if (shouldPersist) {
+            view?.loadUrl(JS_PERSIST_SESSION)
+          }
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
@@ -1284,48 +1463,10 @@ fun MainScreen(
           isChatLoaded = true
           CookieManager.getInstance().flush()
           
-          // Sync system dark theme to WebView localStorage
-          val isSystemDark = MainActivity.isSystemDarkTheme
-          val themeJs = "javascript:(function() { " +
-              "try { " +
-              "  var wantDark = $isSystemDark; " +
-              "  var changed = false; " +
-              "  var pData = localStorage.getItem('private-data') || '{}'; " +
-              "  var pValue = JSON.parse(pData) || {}; " +
-              "  if (!pValue.settings) pValue.settings = {}; " +
-              "  var current = pValue.settings.theme || 'light'; " +
-              "  if (wantDark && current !== 'dark') { " +
-              "    pValue.settings.theme = 'dark'; " +
-              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
-              "    changed = true; " +
-              "  } else if (!wantDark && current === 'dark') { " +
-              "    pValue.settings.theme = 'light'; " +
-              "    localStorage.setItem('private-data', JSON.stringify(pValue)); " +
-              "    changed = true; " +
-              "  } " +
-              "  var directTheme = localStorage.getItem('theme'); " +
-              "  if (wantDark && directTheme !== 'dark') { " +
-              "    localStorage.setItem('theme', 'dark'); " +
-              "    changed = true; " +
-              "  } else if (!wantDark && directTheme === 'dark') { " +
-              "    localStorage.setItem('theme', 'light'); " +
-              "    changed = true; " +
-              "  } " +
-              "  if (wantDark) { " +
-              "    document.documentElement.classList.add('dark'); " +
-              "    document.documentElement.setAttribute('data-theme', 'dark'); " +
-              "  } else { " +
-              "    document.documentElement.classList.remove('dark'); " +
-              "    document.documentElement.setAttribute('data-theme', 'light'); " +
-              "  } " +
-              "  if (changed) { " +
-              "    window.location.reload(); " +
-              "  } " +
-              "} catch(e) {} " +
-              "})();"
-          view?.loadUrl(themeJs)
-          
-          view?.loadUrl(JS_PERSIST_SESSION)
+          val shouldPersist = url != null && (url.contains("panel.5040.me") || url.contains("chat.5040.me"))
+          if (shouldPersist) {
+            view?.loadUrl(JS_PERSIST_SESSION)
+          }
           view?.loadUrl(JS_BYPASS_WARNINGS)
           view?.loadUrl(JS_NOTIFICATION_AND_THEME)
         }
@@ -1427,6 +1568,31 @@ fun MainScreen(
         }
       }
       
+      setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
+        val fileName = getFileName(url, contentDisposition, mimetype)
+        if (isAudioFile(fileName, mimetype)) {
+          playAudio(url, fileName)
+        } else {
+          activeDownloadState = DownloadStatus(fileName, 0f)
+          downloadFile(
+            scope = coroutineScope,
+            context = context,
+            downloadUrl = url,
+            fileName = fileName,
+            mimeType = mimetype,
+            onProgress = { progress ->
+              activeDownloadState = DownloadStatus(fileName, progress)
+            },
+            onSuccess = { localPath ->
+              activeDownloadState = DownloadStatus(fileName, 100f, isFinished = true, localPath = localPath)
+            },
+            onFailure = { error ->
+              activeDownloadState = DownloadStatus(fileName, 0f, isFailed = true)
+            }
+          )
+        }
+      }
+
       chatWebViewRef = this
       loadUrl("https://chat.5040.me")
     }
@@ -1450,18 +1616,20 @@ fun MainScreen(
     modifier = Modifier
       .fillMaxSize()
   ) {
-    when (val state = appUpdateState) {
+    AnimatedContent(
+      targetState = appUpdateState,
+      transitionSpec = {
+        fadeIn(animationSpec = tween(500)) togetherWith fadeOut(animationSpec = tween(500))
+      },
+      label = "AppUpdateStateTransition",
+      modifier = Modifier.fillMaxSize()
+    ) { state ->
+      when (state) {
       is AppUpdateState.PermissionsRequired -> {
         PermissionsRequiredScreen(
           onGrantClick = {
             val needed = mutableListOf<String>().apply {
-              add(android.Manifest.permission.READ_PHONE_STATE)
-              add(android.Manifest.permission.RECORD_AUDIO)
               add(android.Manifest.permission.RECEIVE_SMS)
-              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                add(android.Manifest.permission.READ_CALL_LOG)
-                add(android.Manifest.permission.ANSWER_PHONE_CALLS)
-              }
               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 add(android.Manifest.permission.POST_NOTIFICATIONS)
               }
@@ -1492,102 +1660,168 @@ fun MainScreen(
             .fillMaxSize()
             .systemBarsPadding()
         ) {
-    if (isOfflineOrError) {
-      Box(
-        modifier = Modifier
-          .fillMaxSize()
-          .background(Color(0xFFB3261E)) // Royal deep red
-          .clickable(enabled = true, onClick = {}),
-        contentAlignment = Alignment.Center
-      ) {
-        Column(
-          horizontalAlignment = Alignment.CenterHorizontally,
-          verticalArrangement = Arrangement.Center,
-          modifier = Modifier.padding(32.dp)
-        ) {
-          Canvas(modifier = Modifier.size(80.dp)) {
-            val width = size.width
-            val height = size.height
-            val strokeWidthPx = 4.dp.toPx()
-            val path = Path().apply {
-              moveTo(width / 2f, height * 0.15f)
-              lineTo(width * 0.15f, height * 0.85f)
-              lineTo(width * 0.85f, height * 0.85f)
-              close()
-            }
-            drawPath(
-              path = path,
-              color = Color.White,
-              style = androidx.compose.ui.graphics.drawscope.Stroke(
-                width = strokeWidthPx,
-                cap = androidx.compose.ui.graphics.StrokeCap.Round,
-                join = androidx.compose.ui.graphics.StrokeJoin.Round
-              )
-            )
-            
-            drawRoundRect(
-              color = Color.White,
-              topLeft = Offset(width / 2f - 2.5.dp.toPx(), height * 0.40f),
-              size = Size(5.dp.toPx(), height * 0.25f),
-              cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx(), 2.dp.toPx())
-            )
-            drawCircle(
-              color = Color.White,
-              radius = 3.dp.toPx(),
-              center = Offset(width / 2f, height * 0.73f)
-            )
-          }
-
-          Spacer(modifier = Modifier.height(28.dp))
-          
-          Text(
-            text = "اینترنت وصل نیست",
-            style = MaterialTheme.typography.titleLarge.copy(
-              fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-            ),
-            color = Color.White,
-            textAlign = TextAlign.Center
-          )
-          
-          Spacer(modifier = Modifier.height(10.dp))
-          
-          Text(
-            text = "لطفاً اتصال دستگاه خود را بررسی کرده و دوباره تلاش کنید.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = Color(0xFFFFDAD9),
-            textAlign = TextAlign.Center
-          )
-          
-          Spacer(modifier = Modifier.height(32.dp))
-          
-          Button(
-            onClick = {
-              hasWebLoadError = false
-              isMainLoaded = false
-              isChatLoaded = false
-              val online = isOnline(context)
-              isOnlineState = online
-              mainWebViewRef?.loadUrl("https://panel.5040.me")
-              chatWebViewRef?.loadUrl("https://chat.5040.me")
+          AnimatedContent(
+            targetState = isOfflineOrError,
+            transitionSpec = {
+              fadeIn(animationSpec = tween(500)) togetherWith fadeOut(animationSpec = tween(500))
             },
-            colors = ButtonDefaults.buttonColors(
-              containerColor = Color.White,
-              contentColor = Color(0xFFB3261E)
-            ),
-            shape = MaterialTheme.shapes.medium,
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
-            contentPadding = PaddingValues(horizontal = 32.dp, vertical = 14.dp)
-          ) {
-            Text(
-              "تلاش مجدد",
-              style = MaterialTheme.typography.titleMedium.copy(
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+            label = "OfflineOrErrorTransition",
+            modifier = Modifier.fillMaxSize()
+          ) { offline ->
+            if (offline) {
+              var isCheckingConnection by remember { mutableStateOf(false) }
+              val infiniteTransition = rememberInfiniteTransition(label = "offline_pulse")
+              val pulseScale by infiniteTransition.animateFloat(
+                initialValue = 0.95f,
+                targetValue = 1.05f,
+                animationSpec = infiniteRepeatable(
+                  animation = tween(1200, easing = FastOutSlowInEasing),
+                  repeatMode = RepeatMode.Reverse
+                ),
+                label = "pulse_scale"
               )
-            )
-          }
-        }
-      }
-    } else {
+              val pulseAlpha by infiniteTransition.animateFloat(
+                initialValue = 0.4f,
+                targetValue = 0.8f,
+                animationSpec = infiniteRepeatable(
+                  animation = tween(1200, easing = LinearEasing),
+                  repeatMode = RepeatMode.Reverse
+                ),
+                label = "pulse_alpha"
+              )
+
+              Box(
+                modifier = Modifier
+                  .fillMaxSize()
+                  .background(
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                      colors = listOf(
+                        Color(0xFF231010), // Dark warm blood-red black
+                        Color(0xFF0F0808)  // Ultra dark charcoal
+                      )
+                    )
+                  )
+                  .clickable(enabled = true, onClick = {}),
+                contentAlignment = Alignment.Center
+              ) {
+                // Decorative glowing radial backdrop
+                Box(
+                  modifier = Modifier
+                    .size(240.dp)
+                    .graphicsLayer {
+                      scaleX = pulseScale
+                      scaleY = pulseScale
+                      alpha = pulseAlpha
+                    }
+                    .background(
+                      androidx.compose.ui.graphics.Brush.radialGradient(
+                        colors = listOf(
+                          Color(0xFFE53935).copy(alpha = 0.15f),
+                          Color.Transparent
+                        )
+                      )
+                    )
+                )
+
+                Column(
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                  verticalArrangement = Arrangement.Center,
+                  modifier = Modifier
+                    .padding(32.dp)
+                    .widthIn(max = 340.dp)
+                ) {
+                  // Stunning animated warning/wifi-off circle
+                  Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                      .size(96.dp)
+                      .background(Color(0x1AE53935), CircleShape)
+                      .border(BorderStroke(1.5.dp, Color(0xFFE53935).copy(alpha = 0.4f)), CircleShape)
+                  ) {
+                    Icon(
+                      imageVector = androidx.compose.material.icons.Icons.Default.Warning,
+                      contentDescription = null,
+                      tint = Color(0xFFE53935),
+                      modifier = Modifier
+                        .size(44.dp)
+                        .graphicsLayer {
+                          // Gentle scale variation matching the pulse
+                          scaleX = 1f + (pulseScale - 1f) * 0.3f
+                          scaleY = 1f + (pulseScale - 1f) * 0.3f
+                        }
+                    )
+                  }
+
+                  Spacer(modifier = Modifier.height(28.dp))
+
+                  Text(
+                    text = "اتصال به شبکه برقرار نیست",
+                    style = MaterialTheme.typography.titleLarge.copy(
+                      fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                      color = Color.White
+                    ),
+                    textAlign = TextAlign.Center
+                  )
+
+                  Spacer(modifier = Modifier.height(12.dp))
+
+                  Text(
+                    text = "سیستم قادر به برقراری ارتباط با سرور نمی‌باشد. لطفاً اتصال اینترنت خود را بررسی کنید. پس از اتصال، برنامه به صورت خودکار بازیابی خواهد شد.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White.copy(alpha = 0.6f),
+                    textAlign = TextAlign.Center
+                  )
+
+                  Spacer(modifier = Modifier.height(36.dp))
+
+                  Button(
+                    onClick = {
+                      if (!isCheckingConnection) {
+                        isCheckingConnection = true
+                        coroutineScope.launch {
+                          delay(1500) // Beautiful delay so the user feels the connection is being probed!
+                          hasWebLoadError = false
+                          isMainLoaded = false
+                          isChatLoaded = false
+                          val online = isOnline(context)
+                          isOnlineState = online
+                          if (online) {
+                            mainWebViewRef?.loadUrl("https://panel.5040.me")
+                            chatWebViewRef?.loadUrl("https://chat.5040.me")
+                          }
+                          isCheckingConnection = false
+                        }
+                      }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                      containerColor = Color(0xFFE53935),
+                      contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp),
+                    contentPadding = PaddingValues(horizontal = 32.dp, vertical = 14.dp),
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .height(52.dp)
+                  ) {
+                    if (isCheckingConnection) {
+                      CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White,
+                        strokeWidth = 2.5.dp
+                      )
+                    } else {
+                      Text(
+                        "بررسی مجدد اتصال",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                          fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        )
+                      )
+                    }
+                  }
+                }
+              }
+            } else {
       // Main Panel WebView
       Box(modifier = Modifier.fillMaxSize()) {
         AndroidView(
@@ -1653,6 +1887,8 @@ fun MainScreen(
           }
         }
       }
+    }
+  } // Closes AnimatedContent(targetState = isOfflineOrError)
 
       // Floating Action Button Overlay (Completely Circular, bottom-right side absolute)
       val isChatDark = systemDark
@@ -1667,9 +1903,30 @@ fun MainScreen(
         if (chatExpanded) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onPrimaryContainer
       }
 
+      // Smooth color transitions based on bubbleProgress and whether chat is dark
+      val animatedFabBgColor = if (isWebThemeDark) {
+        androidx.compose.ui.graphics.lerp(
+          start = fabBgColor,
+          stop = Color(0xFF1E1E1E),
+          fraction = bubbleProgress
+        )
+      } else {
+        fabBgColor
+      }
+
+      val animatedFabIconColor = if (isWebThemeDark) {
+        androidx.compose.ui.graphics.lerp(
+          start = fabIconColor,
+          stop = Color.Black,
+          fraction = bubbleProgress
+        )
+      } else {
+        fabIconColor
+      }
+
       val iconBlinkTransition = androidx.compose.animation.core.rememberInfiniteTransition(label = "iconBlink")
       val blinkIconColor by iconBlinkTransition.animateColor(
-        initialValue = fabIconColor,
+        initialValue = animatedFabIconColor,
         targetValue = Color.Red,
         animationSpec = androidx.compose.animation.core.infiniteRepeatable(
           animation = androidx.compose.animation.core.tween(durationMillis = 800, easing = androidx.compose.animation.core.LinearEasing),
@@ -1678,7 +1935,7 @@ fun MainScreen(
         label = "icon_blink_color"
       )
 
-      val finalIconColor = if (hasNewChatMessage && !chatExpanded) blinkIconColor else fabIconColor
+      val finalIconColor = if (hasNewChatMessage && !chatExpanded) blinkIconColor else animatedFabIconColor
 
       Box(
         modifier = Modifier
@@ -1702,7 +1959,7 @@ fun MainScreen(
             .fillMaxSize()
             .shadow(elevation = 6.dp, shape = CircleShape)
             .background(
-              color = fabBgColor,
+              color = animatedFabBgColor,
               shape = CircleShape
             )
             .clip(CircleShape)
@@ -1729,17 +1986,34 @@ fun MainScreen(
         }
       }
 
-      // VoIP Call FAB (Bottom-Left Side) temporarily removed as requested
-
-
       // Top-Left Floating Menu Button (smaller than bottom ones, opens the right drawer)
+      val menuBgColor = if (isWebThemeDark) {
+        androidx.compose.ui.graphics.lerp(
+          start = MaterialTheme.colorScheme.primaryContainer,
+          stop = Color(0xFF1E1E1E),
+          fraction = bubbleProgress
+        )
+      } else {
+        MaterialTheme.colorScheme.primaryContainer
+      }
+
+      val menuIconTint = if (isWebThemeDark) {
+        androidx.compose.ui.graphics.lerp(
+          start = MaterialTheme.colorScheme.onPrimaryContainer,
+          stop = Color.Black,
+          fraction = bubbleProgress
+        )
+      } else {
+        MaterialTheme.colorScheme.onPrimaryContainer
+      }
+
       Box(
         modifier = Modifier
           .align(AbsoluteAlignment.TopLeft)
           .absolutePadding(top = 56.dp, left = 16.dp)
           .size(44.dp)
           .shadow(elevation = 6.dp, shape = CircleShape)
-          .background(MaterialTheme.colorScheme.primaryContainer, shape = CircleShape)
+          .background(menuBgColor, shape = CircleShape)
           .clip(CircleShape)
           .clickable { isDrawerOpen = true },
         contentAlignment = Alignment.Center
@@ -1747,7 +2021,7 @@ fun MainScreen(
         Icon(
           imageVector = Icons.Filled.Menu,
           contentDescription = "منوی اصلی",
-          tint = MaterialTheme.colorScheme.onPrimaryContainer,
+          tint = menuIconTint,
           modifier = Modifier.size(20.dp)
         )
       }
@@ -1917,59 +2191,6 @@ fun MainScreen(
                         color = MaterialTheme.colorScheme.primary
                       )
                     }
-
-                    Divider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 14.dp))
-
-                    Text(
-                      text = "اطلاعات سیستم",
-                      style = MaterialTheme.typography.labelMedium,
-                      color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                      modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp)
-                    )
-
-                    // Info Row 1: Connection Status
-                    Row(
-                      modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 10.dp, horizontal = 12.dp),
-                      verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                      Box(
-                        modifier = Modifier
-                          .size(10.dp)
-                          .background(
-                            if (isOnlineState) Color(0xFF4CAF50) else Color(0xFFF44336),
-                            shape = CircleShape
-                          )
-                      )
-                      Text(
-                        text = if (isOnlineState) "برقراری ارتباط: متصل" else "برقراری ارتباط: قطع شد",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                      )
-                    }
-
-                    // Info Row 2: Theme Status
-                    Row(
-                      modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 10.dp, horizontal = 12.dp),
-                      verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                      Icon(
-                        imageVector = Icons.Filled.Settings,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                        modifier = Modifier.size(18.dp)
-                      )
-                      Text(
-                        text = if (MainActivity.isSystemDarkTheme) "حالت تاریک سیستم: فعال" else "حالت تاریک سیستم: غیرفعال",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                      )
-                    }
                   }
                 }
 
@@ -2108,6 +2329,309 @@ fun MainScreen(
             }
           }
         )
+      }
+
+
+
+      // Floating overlays for Download Notification and Audio Player at the top center of Idle state
+      Column(
+        modifier = Modifier
+          .align(Alignment.TopCenter)
+          .fillMaxWidth()
+          .padding(top = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+      ) {
+        // 1. Download Status Bar
+        activeDownloadState?.let { status ->
+          var offsetX by remember { mutableStateOf(0f) }
+          val animatedOffsetX by animateFloatAsState(
+            targetValue = offsetX,
+            animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+          )
+          val alpha by remember(animatedOffsetX) {
+            derivedStateOf {
+              (1f - (kotlin.math.abs(animatedOffsetX) / 600f)).coerceIn(0f, 1f)
+            }
+          }
+
+          if (status.isFinished || status.isFailed) {
+            LaunchedEffect(status) {
+              delay(5000)
+              activeDownloadState = null
+            }
+          }
+
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 16.dp)
+              .graphicsLayer {
+                translationX = animatedOffsetX
+                this.alpha = alpha
+              }
+              .pointerInput(Unit) {
+                detectDragGestures(
+                  onDragEnd = {
+                    if (kotlin.math.abs(offsetX) > 300f) {
+                      offsetX = if (offsetX > 0) 1000f else -1000f
+                      activeDownloadState = null
+                    } else {
+                      offsetX = 0f
+                    }
+                  },
+                  onDrag = { change, dragAmount ->
+                    change.consume()
+                    offsetX += dragAmount.x
+                  }
+                )
+              }
+          ) {
+            Card(
+              modifier = Modifier.fillMaxWidth(),
+              colors = CardDefaults.cardColors(
+                containerColor = if (status.isFailed) MaterialTheme.colorScheme.errorContainer 
+                                 else MaterialTheme.colorScheme.surfaceColorAtElevation(8.dp)
+              ),
+              elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+              shape = RoundedCornerShape(16.dp),
+              border = BorderStroke(1.dp, if (status.isFailed) MaterialTheme.colorScheme.error.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant)
+            ) {
+              CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                  Icon(
+                    imageVector = if (status.isFinished) androidx.compose.material.icons.Icons.Default.CheckCircle 
+                                 else if (status.isFailed) androidx.compose.material.icons.Icons.Default.Warning
+                                 else androidx.compose.material.icons.Icons.Default.ArrowDownward,
+                    contentDescription = null,
+                    tint = if (status.isFinished) Color(0xFF4CAF50)
+                           else if (status.isFailed) MaterialTheme.colorScheme.error
+                           else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(28.dp)
+                  )
+
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      text = status.fileName,
+                      style = MaterialTheme.typography.titleSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                      color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                      text = if (status.isFinished) "ذخیره شد در downloads/5040P"
+                             else if (status.isFailed) "خطا در دانلود فایل"
+                             else "در حال دانلود: ${status.progress.toInt()}%",
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (!status.isFinished && !status.isFailed) {
+                      Spacer(modifier = Modifier.height(8.dp))
+                      LinearProgressIndicator(
+                        progress = { status.progress / 100f },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                        strokeCap = StrokeCap.Round
+                      )
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // 2. Floating Audio Player
+        AnimatedVisibility(
+          visible = audioUrl != null,
+          enter = androidx.compose.animation.expandVertically() + fadeIn(),
+          exit = androidx.compose.animation.shrinkVertically() + fadeOut()
+        ) {
+          Card(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 16.dp),
+            colors = CardDefaults.cardColors(
+              containerColor = Color(0xEB1E1E1E)
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f))
+          ) {
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(12.dp)
+              ) {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                  ) {
+                    Icon(
+                      imageVector = androidx.compose.material.icons.Icons.Default.MusicNote,
+                      contentDescription = null,
+                      tint = MaterialTheme.colorScheme.primary,
+                      modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                      text = audioTitle ?: "فایل صوتی",
+                      style = MaterialTheme.typography.titleSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                      color = Color.White,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis
+                    )
+                  }
+                  IconButton(
+                    onClick = {
+                      audioUrl = null
+                      try {
+                        if (mediaPlayer.isPlaying) {
+                          mediaPlayer.stop()
+                        }
+                        mediaPlayer.reset()
+                      } catch(e: Exception) {}
+                      isAudioPlaying = false
+                    },
+                    modifier = Modifier.size(28.dp)
+                  ) {
+                    Icon(
+                      imageVector = androidx.compose.material.icons.Icons.Default.Close,
+                      contentDescription = "بستن",
+                      tint = Color.White.copy(alpha = 0.7f),
+                      modifier = Modifier.size(18.dp)
+                    )
+                  }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                  Slider(
+                    value = audioPosition.toFloat(),
+                    onValueChange = { newValue ->
+                      audioPosition = newValue.toInt()
+                      try { mediaPlayer.seekTo(audioPosition) } catch(e: Exception) {}
+                    },
+                    valueRange = 0f..audioDuration.toFloat().coerceAtLeast(1f),
+                    modifier = Modifier.weight(1f).height(16.dp),
+                    colors = SliderDefaults.colors(
+                      thumbColor = MaterialTheme.colorScheme.primary,
+                      activeTrackColor = MaterialTheme.colorScheme.primary,
+                      inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                    )
+                  )
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                  Text(
+                    text = "${formatTime(audioPosition)} / ${formatTime(audioDuration)}",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                      fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                    ),
+                    color = Color.White.copy(alpha = 0.8f)
+                  )
+
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                  ) {
+                    IconButton(
+                      onClick = {
+                        val target = (audioPosition - 5000).coerceAtLeast(0)
+                        try { mediaPlayer.seekTo(target) } catch(e: Exception) {}
+                        audioPosition = target
+                      },
+                      modifier = Modifier
+                        .size(32.dp)
+                        .background(Color.White.copy(alpha = 0.1f), CircleShape)
+                    ) {
+                      Text(
+                        text = "-۵s",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                        color = Color.White
+                      )
+                    }
+
+                    IconButton(
+                      onClick = {
+                        try {
+                          if (isAudioPlaying) {
+                            mediaPlayer.pause()
+                            isAudioPlaying = false
+                          } else {
+                            mediaPlayer.start()
+                            isAudioPlaying = true
+                          }
+                        } catch(e: Exception) {}
+                      },
+                      modifier = Modifier
+                        .size(40.dp)
+                        .background(MaterialTheme.colorScheme.primary, CircleShape)
+                    ) {
+                      if (isAudioLoading) {
+                        androidx.compose.material3.CircularProgressIndicator(
+                          modifier = Modifier.size(18.dp),
+                          color = Color.White,
+                          strokeWidth = 2.dp
+                        )
+                      } else {
+                        Icon(
+                          imageVector = if (isAudioPlaying) androidx.compose.material.icons.Icons.Default.Pause 
+                                       else androidx.compose.material.icons.Icons.Default.PlayArrow,
+                          contentDescription = if (isAudioPlaying) "توقف" else "پخش",
+                          tint = Color.White,
+                          modifier = Modifier.size(22.dp)
+                        )
+                      }
+                    }
+
+                    IconButton(
+                      onClick = {
+                        val target = (audioPosition + 5000).coerceAtMost(audioDuration)
+                        try { mediaPlayer.seekTo(target) } catch(e: Exception) {}
+                        audioPosition = target
+                      },
+                      modifier = Modifier
+                        .size(32.dp)
+                        .background(Color.White.copy(alpha = 0.1f), CircleShape)
+                    ) {
+                      Text(
+                        text = "+۵s",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                        color = Color.White
+                      )
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
     }
@@ -2259,7 +2783,15 @@ fun CredentialsDialog(
     },
     text = {
       Box(modifier = Modifier.width(320.dp).heightIn(max = 450.dp)) {
-        if (isAddingNew) {
+        AnimatedContent(
+          targetState = isAddingNew,
+          transitionSpec = {
+            fadeIn(animationSpec = androidx.compose.animation.core.tween(220, delayMillis = 90)) togetherWith
+            fadeOut(animationSpec = androidx.compose.animation.core.tween(90))
+          },
+          label = "CredentialsFormTransition"
+        ) { addingNew ->
+          if (addingNew) {
           Column(
             modifier = Modifier
               .fillMaxWidth()
@@ -2451,6 +2983,7 @@ fun CredentialsDialog(
         }
       }
     }
+    }
   )
 }
 
@@ -2626,998 +3159,11 @@ class WebAppInterface(
   }
 }
 
-@Composable
-fun AudioWaveformVisualizer(isActive: Boolean) {
-  val infiniteTransition = androidx.compose.animation.core.rememberInfiniteTransition(label = "waveform")
-  val barCount = 15
-  val heights = remember { (0 until barCount).map { kotlin.random.Random.nextFloat() * 0.8f + 0.2f } }
-  val durations = remember { (0 until barCount).map { kotlin.random.Random.nextInt(250, 450) } }
 
-  Row(
-    modifier = Modifier
-      .fillMaxWidth()
-      .height(60.dp)
-      .padding(vertical = 8.dp),
-    horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
-    verticalAlignment = Alignment.CenterVertically
-  ) {
-    for (i in 0 until barCount) {
-      val targetVal = if (isActive) heights[i] else 0.1f
-      val duration = durations[i]
-      val animState = infiniteTransition.animateFloat(
-        initialValue = 0.1f,
-        targetValue = targetVal,
-        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-          animation = androidx.compose.animation.core.tween(
-            durationMillis = duration,
-            easing = androidx.compose.animation.core.LinearEasing
-          ),
-          repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
-        ),
-        label = "bar_$i"
-      )
-      Box(
-        modifier = Modifier
-          .width(5.dp)
-          .fillMaxHeight(animState.value)
-          .background(
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(2.5.dp)
-          )
-      )
-    }
-  }
-}
 
 @Composable
-fun VoipIcon(
-  name: String,
-  contentDescription: String?,
-  modifier: Modifier = Modifier,
-  tint: Color = LocalContentColor.current
-) {
-  Canvas(modifier = modifier.size(24.dp)) {
-    when (name) {
-      "Bluetooth" -> {
-        val path = Path().apply {
-          moveTo(12f, 3f)
-          lineTo(12f, 21f)
-          lineTo(16.5f, 16.5f)
-          lineTo(7.5f, 12f)
-          lineTo(16.5f, 7.5f)
-          lineTo(12f, 3f)
-        }
-        drawPath(path = path, color = tint, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f))
-      }
-      "VolumeUp" -> {
-        val path = Path().apply {
-          moveTo(4f, 9f)
-          lineTo(8f, 9f)
-          lineTo(13f, 5f)
-          lineTo(13f, 19f)
-          lineTo(8f, 15f)
-          lineTo(4f, 15f)
-          close()
-        }
-        drawPath(path = path, color = tint)
-        drawArc(
-          color = tint,
-          startAngle = -45f,
-          sweepAngle = 90f,
-          useCenter = false,
-          style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
-          topLeft = androidx.compose.ui.geometry.Offset(15f, 8f),
-          size = androidx.compose.ui.geometry.Size(6f, 8f)
-        )
-        drawArc(
-          color = tint,
-          startAngle = -45f,
-          sweepAngle = 90f,
-          useCenter = false,
-          style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
-          topLeft = androidx.compose.ui.geometry.Offset(13f, 5f),
-          size = androidx.compose.ui.geometry.Size(12f, 14f)
-        )
-      }
-      "VolumeDown" -> {
-        val path = Path().apply {
-          moveTo(4f, 9f)
-          lineTo(8f, 9f)
-          lineTo(13f, 5f)
-          lineTo(13f, 19f)
-          lineTo(8f, 15f)
-          lineTo(4f, 15f)
-          close()
-        }
-        drawPath(path = path, color = tint)
-        drawArc(
-          color = tint,
-          startAngle = -45f,
-          sweepAngle = 90f,
-          useCenter = false,
-          style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
-          topLeft = androidx.compose.ui.geometry.Offset(15f, 8f),
-          size = androidx.compose.ui.geometry.Size(6f, 8f)
-        )
-      }
-      "Mic" -> {
-        drawRoundRect(
-          color = tint,
-          topLeft = androidx.compose.ui.geometry.Offset(9f, 4f),
-          size = androidx.compose.ui.geometry.Size(6f, 10f),
-          cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
-        )
-        drawArc(
-          color = tint,
-          startAngle = 0f,
-          sweepAngle = 180f,
-          useCenter = false,
-          style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
-          topLeft = androidx.compose.ui.geometry.Offset(6f, 8f),
-          size = androidx.compose.ui.geometry.Size(12f, 8f)
-        )
-        drawLine(
-          color = tint,
-          start = androidx.compose.ui.geometry.Offset(12f, 16f),
-          end = androidx.compose.ui.geometry.Offset(12f, 19f),
-          strokeWidth = 2f
-        )
-        drawLine(
-          color = tint,
-          start = androidx.compose.ui.geometry.Offset(8f, 19f),
-          end = androidx.compose.ui.geometry.Offset(16f, 19f),
-          strokeWidth = 2f
-        )
-      }
-      "MicOff" -> {
-        drawRoundRect(
-          color = tint.copy(alpha = 0.5f),
-          topLeft = androidx.compose.ui.geometry.Offset(9f, 4f),
-          size = androidx.compose.ui.geometry.Size(6f, 10f),
-          cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
-        )
-        drawArc(
-          color = tint,
-          startAngle = 0f,
-          sweepAngle = 180f,
-          useCenter = false,
-          style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
-          topLeft = androidx.compose.ui.geometry.Offset(6f, 8f),
-          size = androidx.compose.ui.geometry.Size(12f, 8f)
-        )
-        drawLine(
-          color = tint,
-          start = androidx.compose.ui.geometry.Offset(12f, 16f),
-          end = androidx.compose.ui.geometry.Offset(12f, 19f),
-          strokeWidth = 2f
-        )
-        drawLine(
-          color = tint,
-          start = androidx.compose.ui.geometry.Offset(8f, 19f),
-          end = androidx.compose.ui.geometry.Offset(16f, 19f),
-          strokeWidth = 2f
-        )
-        drawLine(
-          color = tint,
-          start = androidx.compose.ui.geometry.Offset(4f, 4f),
-          end = androidx.compose.ui.geometry.Offset(20f, 20f),
-          strokeWidth = 2f
-        )
-      }
-      "Dialpad" -> {
-        val dotRadius = 2f
-        val positions = listOf(6f, 12f, 18f)
-        for (x in positions) {
-          for (y in positions) {
-            drawCircle(
-              color = tint,
-              radius = dotRadius,
-              center = androidx.compose.ui.geometry.Offset(x, y)
-            )
-          }
-        }
-      }
-      else -> {
-        // Fallback dot
-        drawCircle(color = tint, radius = 4f, center = androidx.compose.ui.geometry.Offset(12f, 12f))
-      }
-    }
-  }
-}
-
-private fun formatVoipDuration(seconds: Int): String {
-  val m = seconds / 60
-  val s = seconds % 60
-  return String.format("%02d:%02d", m, s)
-}
-
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
-@Composable
-fun VoipDialog(
-  voipManager: VoipManager,
-  onDismiss: () -> Unit
-) {
-  val context = LocalContext.current
-  val callState by voipManager.callState.collectAsState()
-  val activeCallNumber by voipManager.activeCallNumber.collectAsState()
-  val isMuted by voipManager.isMuted.collectAsState()
-  val isSpeakerOn by voipManager.isSpeakerOn.collectAsState()
-  val callDuration by voipManager.callDuration.collectAsState()
-  val inputGain by voipManager.inputGain.collectAsState()
-  val outputVolume by voipManager.outputVolume.collectAsState()
-  val registrationState by voipManager.registrationState.collectAsState()
-  val accountState by voipManager.accountState.collectAsState()
-
-  val isNearEar by voipManager.isNearEar.collectAsState()
-  val selectedAudioDevice by voipManager.selectedAudioDevice.collectAsState()
-  val availableAudioDevices by voipManager.availableAudioDevices.collectAsState()
-
-  var dialedNumber by remember { mutableStateOf("") }
-  var showAudioMenu by remember { mutableStateOf(false) }
-
-  val callHistory by voipManager.callHistory.collectAsState(initial = emptyList())
-  var selectedTab by remember { mutableStateOf(0) } // 0 = Dialer, 1 = History
-  val coroutineScope = rememberCoroutineScope()
-
-  val hasOverlayPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-    Settings.canDrawOverlays(context)
-  } else {
-    true
-  }
-
-  // Auto-register on open if not registered
-  LaunchedEffect(Unit) {
-    if (registrationState == "Unregistered" && accountState.server.isNotBlank()) {
-      voipManager.registerAccount()
-    }
-  }
-
-  if (callState != VoipCallState.IDLE) {
-    // --- IMMERSIVE FULL-SCREEN CALL SCREEN ---
-    Dialog(
-      onDismissRequest = {}, // Lock dismiss actions to emulate system call screen
-      properties = DialogProperties(
-        usePlatformDefaultWidth = false,
-        dismissOnBackPress = false,
-        dismissOnClickOutside = false
-      )
-    ) {
-      if (isNearEar) {
-        // Simulating the screen turning completely off when near the ear
-        Box(
-          modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .clickable(enabled = false) {}
-        )
-      } else {
-        // Immersive Dark Calling UI (like standard phone call screens)
-        Box(
-          modifier = Modifier
-            .fillMaxSize()
-            .background(
-              androidx.compose.ui.graphics.Brush.verticalGradient(
-                listOf(Color(0xFF0F172A), Color(0xFF020617))
-              )
-            )
-            .windowInsetsPadding(WindowInsets.safeDrawing)
-            .padding(24.dp)
-        ) {
-          Column(
-            modifier = Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceBetween
-          ) {
-            // Top area: Call Info & Secure Label
-            Column(
-              horizontalAlignment = Alignment.CenterHorizontally,
-              modifier = Modifier.padding(top = 16.dp)
-            ) {
-              Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier
-                  .background(Color(0x1110B981), shape = CircleShape)
-                  .padding(horizontal = 12.dp, vertical = 6.dp)
-              ) {
-                Box(
-                  modifier = Modifier
-                    .size(6.dp)
-                    .background(Color(0xFF10B981), shape = CircleShape)
-                )
-                Text(
-                  text = "تماس امن و مستقیم (VoIP)",
-                  style = MaterialTheme.typography.labelSmall,
-                  color = Color(0xFF34D399)
-                )
-              }
-              
-              Spacer(modifier = Modifier.height(32.dp))
-              
-              // Pulsing avatar container
-              Box(
-                modifier = Modifier
-                  .size(120.dp)
-                  .background(Color(0x0AFFFFFF), shape = CircleShape)
-                  .padding(12.dp),
-                contentAlignment = Alignment.Center
-              ) {
-                Box(
-                  modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0x15FFFFFF), shape = CircleShape),
-                  contentAlignment = Alignment.Center
-                ) {
-                  Icon(
-                    imageVector = Icons.Filled.Person,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(56.dp)
-                  )
-                }
-              }
-
-              Spacer(modifier = Modifier.height(16.dp))
-
-              Text(
-                text = activeCallNumber,
-                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
-                color = Color.White,
-                textAlign = TextAlign.Center
-              )
-              
-              Spacer(modifier = Modifier.height(8.dp))
-
-              Text(
-                text = when (callState) {
-                  VoipCallState.DIALING -> "در حال شماره‌گیری..."
-                  VoipCallState.RINGING -> "در حال زنگ خوردن..."
-                  VoipCallState.CONNECTED -> "تماس برقرار شد • ${formatVoipDuration(callDuration)}"
-                  VoipCallState.DISCONNECTED -> "تماس پایان یافت"
-                  else -> ""
-                },
-                style = MaterialTheme.typography.titleMedium,
-                color = if (callState == VoipCallState.CONNECTED) Color(0xFF34D399) else Color(0xFF94A3B8)
-              )
-            }
-
-            // Middle area: real-time visualizer
-            Box(
-              modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-              contentAlignment = Alignment.Center
-            ) {
-              AudioWaveformVisualizer(isActive = callState == VoipCallState.CONNECTED)
-            }
-
-            // Bottom area: Call controls & Hangup
-            Column(
-              horizontalAlignment = Alignment.CenterHorizontally,
-              verticalArrangement = Arrangement.spacedBy(24.dp),
-              modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
-            ) {
-              // Custom Audio Gain Sliders inside a modern expandable panel
-              Row(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .background(Color(0x0DFFFFFF), shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
-                  .padding(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-              ) {
-                // Micro gain
-                Column(modifier = Modifier.weight(1f)) {
-                  Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                  ) {
-                    Text("میکروفون", style = MaterialTheme.typography.labelSmall, color = Color(0xFF94A3B8))
-                    Text("${(inputGain * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, color = Color.White)
-                  }
-                  Slider(
-                    value = inputGain,
-                    onValueChange = { voipManager.setInputGain(it) },
-                    colors = SliderDefaults.colors(
-                      activeTrackColor = Color.White,
-                      inactiveTrackColor = Color(0x33FFFFFF),
-                      thumbColor = Color.White
-                    ),
-                    enabled = !isMuted
-                  )
-                }
-                
-                // Volume gain
-                Column(modifier = Modifier.weight(1f)) {
-                  Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                  ) {
-                    Text("بلندگو", style = MaterialTheme.typography.labelSmall, color = Color(0xFF94A3B8))
-                    Text("${(outputVolume * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, color = Color.White)
-                  }
-                  Slider(
-                    value = outputVolume,
-                    onValueChange = { voipManager.setOutputVolume(it) },
-                    colors = SliderDefaults.colors(
-                      activeTrackColor = Color.White,
-                      inactiveTrackColor = Color(0x33FFFFFF),
-                      thumbColor = Color.White
-                    )
-                  )
-                }
-              }
-
-              // Control buttons row
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-              ) {
-                // Mute microphone
-                IconButton(
-                  onClick = { voipManager.toggleMute() },
-                  modifier = Modifier
-                    .size(56.dp)
-                    .background(
-                      color = if (isMuted) Color(0x44EF4444) else Color(0x15FFFFFF),
-                      shape = CircleShape
-                    )
-                ) {
-                  VoipIcon(
-                    name = if (isMuted) "MicOff" else "Mic",
-                    contentDescription = "بی‌صدا کردن",
-                    tint = if (isMuted) Color(0xFFEF4444) else Color.White,
-                    modifier = Modifier.size(24.dp)
-                  )
-                }
-
-                // Audio Output Selection Menu
-                Box {
-                  IconButton(
-                    onClick = { 
-                      voipManager.updateAvailableAudioDevices()
-                      showAudioMenu = true 
-                    },
-                    modifier = Modifier
-                      .size(56.dp)
-                      .background(
-                        color = if (selectedAudioDevice != AudioOutputDevice.EARPIECE) Color(0xFF3B82F6) else Color(0x15FFFFFF),
-                        shape = CircleShape
-                      )
-                  ) {
-                    VoipIcon(
-                      name = when (selectedAudioDevice) {
-                        AudioOutputDevice.SPEAKER -> "VolumeUp"
-                        AudioOutputDevice.BLUETOOTH -> "Bluetooth"
-                        else -> "VolumeDown"
-                      },
-                      contentDescription = "خروجی صدا",
-                      tint = Color.White,
-                      modifier = Modifier.size(24.dp)
-                    )
-                  }
-
-                  // Dropdown menu for selecting output devices
-                  DropdownMenu(
-                    expanded = showAudioMenu,
-                    onDismissRequest = { showAudioMenu = false },
-                    modifier = Modifier.background(Color(0xFF1E293B))
-                  ) {
-                    availableAudioDevices.forEach { device ->
-                      DropdownMenuItem(
-                        text = {
-                          Text(
-                            text = when (device) {
-                              AudioOutputDevice.EARPIECE -> "📱 خروجی گوشی (Earpiece)"
-                              AudioOutputDevice.SPEAKER -> "🔊 بلندگو (Speaker)"
-                              AudioOutputDevice.BLUETOOTH -> "🎧 بلوتوث (Bluetooth)"
-                            },
-                            color = Color.White,
-                            style = MaterialTheme.typography.bodyMedium
-                          )
-                        },
-                        onClick = {
-                          voipManager.selectAudioDevice(device)
-                          showAudioMenu = false
-                        }
-                      )
-                    }
-                  }
-                }
-
-                // Hangup Button
-                IconButton(
-                  onClick = { voipManager.endCall() },
-                  modifier = Modifier
-                    .size(64.dp)
-                    .background(color = Color(0xFFEF4444), shape = CircleShape)
-                ) {
-                  Icon(
-                    imageVector = Icons.Filled.Close,
-                    contentDescription = "قطع تماس",
-                    tint = Color.White,
-                    modifier = Modifier.size(32.dp)
-                  )
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  } else {
-    // --- IDLE / DIALPAD DIALOG ---
-    AlertDialog(
-      onDismissRequest = onDismiss,
-      confirmButton = {},
-      dismissButton = {
-        TextButton(onClick = onDismiss) {
-          Text("بستن و فعالیت در پس‌زمینه", style = MaterialTheme.typography.labelLarge)
-        }
-      },
-      title = {
-        Text(
-          text = "سیستم تماس اینترنتی (VoIP)",
-          style = MaterialTheme.typography.titleLarge,
-          color = MaterialTheme.colorScheme.primary,
-          modifier = Modifier.fillMaxWidth(),
-          textAlign = TextAlign.Center
-        )
-      },
-      text = {
-        Box(modifier = Modifier.width(340.dp).heightIn(max = 500.dp)) {
-          Column(modifier = Modifier.fillMaxWidth()) {
-            TabRow(
-              selectedTabIndex = selectedTab,
-              modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
-            ) {
-              Tab(
-                selected = selectedTab == 0,
-                onClick = { selectedTab = 0 },
-                text = { Text("شماره‌گیر", style = MaterialTheme.typography.labelLarge) },
-                icon = { Icon(Icons.Filled.Call, contentDescription = null, modifier = Modifier.size(20.dp)) }
-              )
-              Tab(
-                selected = selectedTab == 1,
-                onClick = { selectedTab = 1 },
-                text = { Text("تاریخچه", style = MaterialTheme.typography.labelLarge) },
-                icon = { Icon(Icons.Filled.Info, contentDescription = null, modifier = Modifier.size(20.dp)) }
-              )
-            }
-
-            if (selectedTab == 0) {
-              if (!hasOverlayPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                Card(
-                  colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f)
-                  ),
-                  border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
-                  modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
-                ) {
-                  Column(
-                    modifier = Modifier.padding(10.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                  ) {
-                    Text(
-                      text = "⚠️ برای نمایش پاپ‌آپ تماس هنگام خروج از برنامه، نیاز به مجوز «نمایش روی سایر برنامه‌ها» است.",
-                      style = MaterialTheme.typography.bodySmall,
-                      color = MaterialTheme.colorScheme.onErrorContainer,
-                      textAlign = TextAlign.Center
-                    )
-                    Button(
-                      onClick = {
-                        try {
-                          val intent = Intent(
-                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                            Uri.parse("package:${context.packageName}")
-                          )
-                          context.startActivity(intent)
-                        } catch (e: Exception) {
-                          val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
-                          context.startActivity(intent)
-                        }
-                      },
-                      colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error
-                      ),
-                      modifier = Modifier.fillMaxWidth()
-                    ) {
-                      Text("فعال‌سازی مجوز", style = MaterialTheme.typography.labelMedium)
-                    }
-                  }
-                }
-              }
-
-              // Connection status banner
-              Card(
-                colors = CardDefaults.cardColors(
-                  containerColor = when (registrationState) {
-                    "Registered" -> Color(0xFFE8F5E9)
-                    "Registering" -> Color(0xFFFFFDE7)
-                    "VpnConnecting" -> Color(0xFFEDE7F6)
-                    "Failed" -> Color(0xFFFFEBEE)
-                    else -> Color(0xFFECEFF1)
-                  }
-                ),
-                modifier = Modifier.fillMaxWidth()
-              ) {
-                Row(
-                  modifier = Modifier.padding(8.dp),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.Center
-                ) {
-                  Box(
-                    modifier = Modifier
-                      .size(8.dp)
-                      .background(
-                        color = when (registrationState) {
-                          "Registered" -> Color(0xFF4CAF50)
-                          "Registering" -> Color(0xFFFFEB3B)
-                          "VpnConnecting" -> Color(0xFF9C27B0)
-                          "Failed" -> Color(0xFFE53935)
-                          else -> Color(0xFF78909C)
-                        },
-                        shape = CircleShape
-                      )
-                  )
-                  Spacer(modifier = Modifier.width(6.dp))
-                  Text(
-                    text = when (registrationState) {
-                      "Registered" -> "متصل به سرور SIP (${accountState.username})"
-                      "Registering" -> "در حال اتصال به سرور SIP..."
-                      "VpnConnecting" -> "در حال برقراری اتصال به VPN اختصاصی..."
-                      "Failed" -> "خطا در اتصال به سرور (تنظیمات SIP یا VPN را بررسی کنید)"
-                      else -> "آفلاین - نیاز به تنظیمات SIP"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = when (registrationState) {
-                      "Registered" -> Color(0xFF2E7D32)
-                      "Registering" -> Color(0xFFF57F17)
-                      "VpnConnecting" -> Color(0xFF6A1B9A)
-                      "Failed" -> Color(0xFFC62828)
-                      else -> Color(0xFF37474F)
-                    }
-                  )
-                }
-              }
-
-              Spacer(modifier = Modifier.height(16.dp))
-
-              CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                Column(
-                  modifier = Modifier.fillMaxWidth(),
-                  horizontalAlignment = Alignment.CenterHorizontally,
-                  verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                  // Display number being typed
-                  OutlinedTextField(
-                    value = dialedNumber,
-                    onValueChange = { dialedNumber = it },
-                    placeholder = { Text("شماره داخلی یا SIP URI") },
-                    modifier = Modifier
-                      .fillMaxWidth()
-                      .focusProperties { canFocus = false },
-                    singleLine = true,
-                    readOnly = true,
-                    textStyle = MaterialTheme.typography.headlineSmall.copy(textAlign = TextAlign.Center),
-                    trailingIcon = {
-                      if (dialedNumber.isNotEmpty()) {
-                        Box(
-                          modifier = Modifier
-                            .clip(CircleShape)
-                            .combinedClickable(
-                              onClick = {
-                                if (dialedNumber.isNotEmpty()) {
-                                  dialedNumber = dialedNumber.dropLast(1)
-                                }
-                              },
-                              onLongClick = {
-                                dialedNumber = ""
-                              }
-                            )
-                            .padding(12.dp)
-                        ) {
-                          Icon(Icons.Filled.ArrowBack, contentDescription = "حذف")
-                        }
-                      }
-                    }
-                  )
-
-                  // Grid of Numbers
-                  val keys = listOf(
-                    listOf("1", "2", "3"),
-                    listOf("4", "5", "6"),
-                    listOf("7", "8", "9"),
-                    listOf("*", "0", "#")
-                  )
-
-                  Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                  ) {
-                    keys.forEach { rowKeys ->
-                      Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                      ) {
-                        rowKeys.forEach { key ->
-                          Button(
-                            onClick = {
-                              dialedNumber += key
-                              voipManager.playDtmf(key[0])
-                            },
-                            modifier = Modifier
-                              .weight(1f)
-                              .height(52.dp),
-                            colors = ButtonDefaults.buttonColors(
-                              containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                              contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                          ) {
-                            Text(
-                              text = key,
-                              style = MaterialTheme.typography.titleLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-                            )
-                          }
-                        }
-                      }
-                    }
-                  }
-
-                  Spacer(modifier = Modifier.height(8.dp))
-
-                  // Call Button
-                  Button(
-                    onClick = {
-                      if (dialedNumber.isBlank()) {
-                        Toast.makeText(context, "لطفا شماره یا آدرس SIP را وارد کنید", Toast.LENGTH_SHORT).show()
-                      } else {
-                        voipManager.startCall(dialedNumber)
-                      }
-                    },
-                    enabled = registrationState == "Registered",
-                    modifier = Modifier
-                      .size(64.dp),
-                    colors = ButtonDefaults.buttonColors(
-                      containerColor = Color(0xFF4CAF50),
-                      contentColor = Color.White,
-                      disabledContainerColor = Color(0xFFE0E0E0),
-                      disabledContentColor = Color(0xFF9E9E9E)
-                    ),
-                    shape = CircleShape,
-                    contentPadding = PaddingValues(0.dp)
-                  ) {
-                    Icon(
-                      imageVector = Icons.Filled.Call,
-                      contentDescription = "برقراری تماس",
-                      modifier = Modifier.size(32.dp)
-                    )
-                  }
-                }
-              }
-            } else {
-              // Call History Tab
-              Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                  modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                  horizontalArrangement = Arrangement.SpaceBetween,
-                  verticalAlignment = Alignment.CenterVertically
-                ) {
-                  Text(
-                    text = "تماس‌های اخیر",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                  )
-                  if (callHistory.isNotEmpty()) {
-                    TextButton(
-                      onClick = {
-                        coroutineScope.launch {
-                          voipManager.callRepository.clearHistory()
-                        }
-                      },
-                      colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                    ) {
-                      Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                      ) {
-                        Icon(Icons.Filled.Delete, contentDescription = "پاک کردن", modifier = Modifier.size(16.dp))
-                        Text("پاک کردن تاریخچه", style = MaterialTheme.typography.labelMedium)
-                      }
-                    }
-                  }
-                }
-
-                if (callHistory.isEmpty()) {
-                  Box(
-                    modifier = Modifier
-                      .fillMaxWidth()
-                      .height(250.dp),
-                    contentAlignment = Alignment.Center
-                  ) {
-                    Column(
-                      horizontalAlignment = Alignment.CenterHorizontally,
-                      verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                      Icon(
-                        imageVector = Icons.Filled.Info,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                        modifier = Modifier.size(48.dp)
-                      )
-                      Text(
-                        text = "هیچ تماسی یافت نشد",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                      )
-                    }
-                  }
-                } else {
-                  androidx.compose.foundation.lazy.LazyColumn(
-                    modifier = Modifier
-                      .fillMaxWidth()
-                      .heightIn(max = 350.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                  ) {
-                    items(callHistory) { record ->
-                      Row(
-                        modifier = Modifier
-                          .fillMaxWidth()
-                          .clickable {
-                            dialedNumber = record.number
-                            selectedTab = 0
-                          }
-                          .padding(vertical = 8.dp, horizontal = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                      ) {
-                        Row(
-                          verticalAlignment = Alignment.CenterVertically,
-                          horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                          Box(
-                            modifier = Modifier
-                              .size(40.dp)
-                              .background(
-                                color = when (record.type) {
-                                  "OUTGOING" -> Color(0xFFE3F2FD)
-                                  "INCOMING" -> Color(0xFFE8F5E9)
-                                  else -> Color(0xFFFFEBEE)
-                                },
-                                shape = CircleShape
-                              ),
-                            contentAlignment = Alignment.Center
-                          ) {
-                            Icon(
-                              imageVector = Icons.Filled.Call,
-                              contentDescription = null,
-                              tint = when (record.type) {
-                                "OUTGOING" -> Color(0xFF1976D2)
-                                "INCOMING" -> Color(0xFF388E3C)
-                                else -> Color(0xFFD32F2F)
-                              },
-                              modifier = Modifier.size(20.dp)
-                            )
-                          }
-
-                          Column {
-                            Text(
-                              text = record.number,
-                              style = MaterialTheme.typography.bodyMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
-                              color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Row(
-                              verticalAlignment = Alignment.CenterVertically,
-                              horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                              Text(
-                                text = when (record.type) {
-                                  "OUTGOING" -> "خروجی"
-                                  "INCOMING" -> "ورودی"
-                                  else -> "بی‌پاسخ"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = when (record.type) {
-                                  "OUTGOING" -> Color(0xFF1976D2)
-                                  "INCOMING" -> Color(0xFF388E3C)
-                                  else -> Color(0xFFD32F2F)
-                                }
-                              )
-                              Text(
-                                text = "•",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                              )
-                              Text(
-                                text = formatVoipDuration(record.durationSeconds),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                              )
-                            }
-                          }
-                        }
-
-                        Column(
-                          horizontalAlignment = Alignment.End
-                        ) {
-                          val dateString = remember(record.timestamp) {
-                            try {
-                              val now = System.currentTimeMillis()
-                              val diff = now - record.timestamp
-                              val sdfTime = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
-                              val timeStr = sdfTime.format(java.util.Date(record.timestamp))
-                              if (diff < 24 * 60 * 60 * 1000L) {
-                                timeStr
-                              } else {
-                                val sdfDate = java.text.SimpleDateFormat("MM/dd", java.util.Locale.getDefault())
-                                sdfDate.format(java.util.Date(record.timestamp)) + " " + timeStr
-                              }
-                            } catch (e: Exception) {
-                              ""
-                            }
-                          }
-                          Text(
-                            text = dateString,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                          )
-                          Spacer(modifier = Modifier.height(4.dp))
-                          IconButton(
-                            onClick = {
-                              voipManager.startCall(record.number)
-                            },
-                            modifier = Modifier.size(24.dp)
-                          ) {
-                            Icon(
-                              imageVector = Icons.Filled.Call,
-                              contentDescription = "تماس مجدد",
-                              tint = Color(0xFF4CAF50),
-                              modifier = Modifier.size(16.dp)
-                            )
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    )
-  }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun SettingsDialog(
-  voipManager: VoipManager,
-  onDismiss: () -> Unit
-) {
-  val context = LocalContext.current
-  val accountState by voipManager.accountState.collectAsState()
-  val registrationState by voipManager.registrationState.collectAsState()
-  val vpnConfigState by voipManager.vpnConfigState.collectAsState()
-  val vpnState by voipManager.vpnState.collectAsState()
-
-  var sipServer by remember { mutableStateOf(accountState.server) }
-  var sipUser by remember { mutableStateOf(accountState.username) }
-  var sipSecret by remember { mutableStateOf(accountState.secret) }
-  var sipPort by remember { mutableStateOf(accountState.port) }
-  var sipTransport by remember { mutableStateOf(accountState.transport) }
-
-  var vpnEnabled by remember { mutableStateOf(vpnConfigState.isEnabled) }
-  var vpnServer by remember { mutableStateOf(vpnConfigState.server) }
-  var vpnUser by remember { mutableStateOf(vpnConfigState.username) }
-  var vpnSecret by remember { mutableStateOf(vpnConfigState.secret) }
-  var vpnType by remember { mutableStateOf(vpnConfigState.type) }
-
-  AlertDialog(
+fun SettingsDialog(onDismiss: () -> Unit) {
+  /*
     onDismissRequest = onDismiss,
     confirmButton = {},
     dismissButton = {
@@ -3913,6 +3459,7 @@ fun SettingsDialog(
       }
     }
   )
+  */
 }
 
 data class ConfigData(
@@ -4238,9 +3785,8 @@ fun PermissionsRequiredScreen(
         )
         Spacer(modifier = Modifier.height(16.dp))
         
-        PermissionDescItem("ضبط صدا", "جهت برقراری تماس‌های صوتی VoIP")
-        PermissionDescItem("وضعیت تلفن", "جهت مدیریت تماس‌های تلفنی و خطوط")
         PermissionDescItem("دریافت پیامک", "جهت پردازش پیام‌های خودکار")
+        PermissionDescItem("ارسال اعلان‌ها", "جهت مطلع کردن شما از پیام‌های جدید چت")
         
         Spacer(modifier = Modifier.height(24.dp))
         
