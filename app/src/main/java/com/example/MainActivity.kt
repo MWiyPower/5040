@@ -198,43 +198,51 @@ private const val JS_NOTIFICATION_AND_THEME = "javascript:(function() { " +
     "    observer.observe(target, { subtree: true, characterData: true, childList: true }); " +
     "  } " +
     "  try { " +
-    "    var currentTheme = 'light'; " +
-    "    var pData = localStorage.getItem('private-data'); " +
-    "    if (pData) { " +
-    "      var pValue = JSON.parse(pData); " +
-    "      if (pValue && pValue.settings && pValue.settings.theme) { " +
-    "        currentTheme = pValue.settings.theme; " +
-    "      } " +
-    "    } " +
-    "    var directTheme = localStorage.getItem('theme'); " +
-    "    if (directTheme) { " +
-    "      currentTheme = directTheme; " +
-    "    } " +
-    "    var isDark = false; " +
-    "    if (document.documentElement.classList.contains('dark') || " +
-    "        document.body.classList.contains('dark') || " +
-    "        document.documentElement.getAttribute('data-theme') === 'dark' || " +
-    "        document.body.getAttribute('data-theme') === 'dark' || " +
-    "        (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)) { " +
-    "      isDark = true; " +
-    "    } " +
-    "    if (!isDark && window.getComputedStyle) { " +
-    "      var bodyBg = window.getComputedStyle(document.body).backgroundColor; " +
-    "      var docBg = window.getComputedStyle(document.documentElement).backgroundColor; " +
-    "      var bgEl = bodyBg || docBg; " +
-    "      if (bgEl) { " +
-    "        var m = bgEl.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/); " +
-    "        if (m) { " +
-    "          var r = parseInt(m[1]), g = parseInt(m[2]), b = parseInt(m[3]); " +
-    "          var brightness = (r * 299 + g * 587 + b * 114) / 1000; " +
-    "          if (brightness < 100) { isDark = true; } " +
+    "    var checkTheme = function() { " +
+    "      try { " +
+    "        var currentTheme = 'light'; " +
+    "        var pData = localStorage.getItem('private-data'); " +
+    "        if (pData) { " +
+    "          var pValue = JSON.parse(pData); " +
+    "          if (pValue && pValue.settings && pValue.settings.theme) { " +
+    "            currentTheme = pValue.settings.theme; " +
+    "          } " +
     "        } " +
-    "      } " +
-    "    } " +
-    "    if (isDark) { currentTheme = 'dark'; } " +
-    "    if (window.AndroidApp && window.AndroidApp.onWebThemeDetected) { " +
-    "      window.AndroidApp.onWebThemeDetected(currentTheme); " +
-    "    } " +
+    "        var directTheme = localStorage.getItem('theme'); " +
+    "        if (directTheme) { " +
+    "          currentTheme = directTheme; " +
+    "        } " +
+    "        var isDark = false; " +
+    "        if (document.documentElement.classList.contains('dark') || " +
+    "            document.body.classList.contains('dark') || " +
+    "            document.documentElement.getAttribute('data-theme') === 'dark' || " +
+    "            document.body.getAttribute('data-theme') === 'dark' || " +
+    "            (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)) { " +
+    "          isDark = true; " +
+    "        } " +
+    "        if (!isDark && window.getComputedStyle) { " +
+    "          var bodyBg = window.getComputedStyle(document.body).backgroundColor; " +
+    "          var docBg = window.getComputedStyle(document.documentElement).backgroundColor; " +
+    "          var bgEl = bodyBg || docBg; " +
+    "          if (bgEl) { " +
+    "            var m = bgEl.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/); " +
+    "            if (m) { " +
+    "              var r = parseInt(m[1]), g = parseInt(m[2]), b = parseInt(m[3]); " +
+    "              var brightness = (r * 299 + g * 587 + b * 114) / 1000; " +
+    "              if (brightness < 100) { isDark = true; } " +
+    "            } " +
+    "          } " +
+    "        } " +
+    "        if (isDark) { currentTheme = 'dark'; } " +
+    "        if (window.AndroidApp && window.AndroidApp.onWebThemeDetected) { " +
+    "          window.AndroidApp.onWebThemeDetected(currentTheme); " +
+    "        } " +
+    "      } catch(e) {} " +
+    "    }; " +
+    "    checkTheme(); " +
+    "    setInterval(checkTheme, 1500); " +
+    "    var themeObserver = new MutationObserver(checkTheme); " +
+    "    themeObserver.observe(document.documentElement, { attributes: true, childList: true, subtree: true }); " +
     "  } catch(e) {} " +
     "  try { " +
     "    var addFocusListener = function() { " +
@@ -710,28 +718,70 @@ private fun configureWebViewSettings(webView: WebView) {
 
 private fun getFileName(url: String, contentDisposition: String?, mimeType: String?): String {
   var fileName = ""
+  
   if (!contentDisposition.isNullOrEmpty()) {
-    val needle = "filename="
-    val index = contentDisposition.indexOf(needle)
-    if (index != -1) {
-      fileName = contentDisposition.substring(index + needle.length).trim().replace("\"", "")
-      val semiIndex = fileName.indexOf(";")
-      if (semiIndex != -1) {
-        fileName = fileName.substring(0, semiIndex).trim()
+    // 1. Try RFC 5987 filename*=UTF-8''... which is the standard for non-ASCII/Persian characters
+    try {
+      val rfc5987Matcher = Regex("filename\\*\\s*=\\s*([A-Za-f0-9-]+)'[A-Za-f0-9-]*'(.+)").find(contentDisposition)
+      if (rfc5987Matcher != null) {
+        val charset = rfc5987Matcher.groupValues[1]
+        val value = rfc5987Matcher.groupValues[2]
+        fileName = java.net.URLDecoder.decode(value, charset.ifEmpty { "UTF-8" })
+      }
+    } catch (e: Exception) {}
+
+    // 2. Fallback to standard filename=
+    if (fileName.isEmpty()) {
+      val needle = "filename="
+      val index = contentDisposition.indexOf(needle)
+      if (index != -1) {
+        fileName = contentDisposition.substring(index + needle.length).trim().replace("\"", "")
+        val semiIndex = fileName.indexOf(";")
+        if (semiIndex != -1) {
+          fileName = fileName.substring(0, semiIndex).trim()
+        }
+        
+        // Decode if it contains % url encoded sequences
+        if (fileName.contains("%")) {
+          try {
+            fileName = java.net.URLDecoder.decode(fileName, "UTF-8")
+          } catch (e: Exception) {}
+        } else {
+          // Check if ISO-8859-1 conversion is needed for garbled Persian text
+          try {
+            val bytes = fileName.toByteArray(Charsets.ISO_8859_1)
+            val decoded = String(bytes, Charsets.UTF_8)
+            if (decoded != fileName) {
+              fileName = decoded
+            }
+          } catch (e: Exception) {}
+        }
       }
     }
   }
+
+  // 3. Fallback to URL's last path segment
   if (fileName.isEmpty()) {
     try {
       val uri = Uri.parse(url)
-      fileName = uri.lastPathSegment ?: ""
+      val lastSegment = uri.lastPathSegment ?: ""
+      if (lastSegment.isNotEmpty()) {
+        fileName = try {
+          java.net.URLDecoder.decode(lastSegment, "UTF-8")
+        } catch (e: Exception) {
+          lastSegment
+        }
+      }
     } catch (e: Exception) {}
   }
+
   if (fileName.isEmpty()) {
     fileName = "downloaded_file"
     val ext = mimeType?.substringAfter("/") ?: "bin"
     fileName = "$fileName.$ext"
   }
+
+  // Clean only invalid OS file characters, keeping spaces, Persian letters, dots, etc.
   return fileName.replace(Regex("[\\\\/:*?\"<>|]"), "_")
 }
 
@@ -845,6 +895,8 @@ fun MainScreen(
   var isMainLoaded by remember { mutableStateOf(false) }
   var loadingMessage by remember { mutableStateOf("در حال ورود به پنل...") }
   var isChatLoaded by remember { mutableStateOf(false) }
+  var isMonitoringPage by remember { mutableStateOf(false) }
+  var isMonitoringLoading by remember { mutableStateOf(false) }
  
   var chatExpanded by remember { mutableStateOf(false) }
   var chatInitialized by remember { mutableStateOf(false) }
@@ -852,7 +904,8 @@ fun MainScreen(
  
   var isOnlineState by remember { mutableStateOf(true) }
   var hasWebLoadError by remember { mutableStateOf(false) }
-  var detectedWebTheme by remember { mutableStateOf("light") }
+  var detectedMainTheme by remember { mutableStateOf("light") }
+  var detectedChatTheme by remember { mutableStateOf("light") }
  
   var fabPosition by remember { mutableStateOf(Offset(900f, 1800f)) }
   var showCredentialsSheet by remember { mutableStateOf(false) }
@@ -919,7 +972,33 @@ fun MainScreen(
       isAudioLoading = true
       isAudioPlaying = false
       audioUrl = url
-      audioTitle = title
+      val decodedTitle = try {
+        var d = title
+        if (d.contains("%")) {
+          try {
+            d = java.net.URLDecoder.decode(d, "UTF-8")
+          } catch (e: Exception) {}
+        }
+        
+        // Double check for legacy ISO-8859-1 encoding conversion (very common for Persian headers)
+        try {
+          val bytes = d.toByteArray(Charsets.ISO_8859_1)
+          val decoded = String(bytes, Charsets.UTF_8)
+          if (decoded != d && decoded.any { it.code in 0x0600..0x06FF }) {
+            d = decoded
+          }
+        } catch (e: Exception) {}
+
+        val extIndex = d.lastIndexOf('.')
+        if (extIndex != -1 && extIndex > d.length - 6) {
+          d = d.substring(0, extIndex)
+        }
+        d = d.replace('_', ' ').replace('-', ' ').trim()
+        d
+      } catch (e: Exception) {
+        title
+      }
+      audioTitle = decodedTitle
       audioPosition = 0
       audioDuration = 0
       
@@ -944,9 +1023,9 @@ fun MainScreen(
   val versionName = remember {
     try {
       val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-      pInfo.versionName ?: "1.1.4"
+      pInfo.versionName ?: "1.1.5"
     } catch (e: Exception) {
-      "1.1.4"
+      "1.1.5"
     }
   }
 
@@ -956,13 +1035,6 @@ fun MainScreen(
     val networkCallback = object : ConnectivityManager.NetworkCallback() {
       override fun onAvailable(network: Network) {
         isOnlineState = true
-        if (hasWebLoadError) {
-          hasWebLoadError = false
-          (context as? android.app.Activity)?.runOnUiThread {
-            mainWebViewRef?.reload()
-            chatWebViewRef?.reload()
-          }
-        }
       }
       override fun onLost(network: Network) {
         isOnlineState = false
@@ -1016,24 +1088,30 @@ fun MainScreen(
 
   var appUpdateState by remember { mutableStateOf<AppUpdateState>(AppUpdateState.CheckingConfig) }
 
-  val isWebThemeDark = (detectedWebTheme == "dark")
-  LaunchedEffect(chatExpanded, isWebThemeDark, appUpdateState) {
+  val isMainThemeDark = (detectedMainTheme == "dark")
+  val isChatThemeDark = (detectedChatTheme == "dark")
+  LaunchedEffect(chatExpanded, isMainThemeDark, isChatThemeDark, appUpdateState) {
     if (appUpdateState == AppUpdateState.Idle) {
       val window = (context as? android.app.Activity)?.window
       if (window != null) {
         val viewLocal = window.decorView
         val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, viewLocal)
         if (chatExpanded) {
-          if (isWebThemeDark) {
-            window.statusBarColor = android.graphics.Color.parseColor("#1E1E1E")
+          if (isChatThemeDark) {
+            window.statusBarColor = android.graphics.Color.parseColor("#000000")
             insetsController.isAppearanceLightStatusBars = false
           } else {
             window.statusBarColor = android.graphics.Color.parseColor("#6750A4")
             insetsController.isAppearanceLightStatusBars = false
           }
         } else {
-          window.statusBarColor = android.graphics.Color.WHITE
-          insetsController.isAppearanceLightStatusBars = true
+          if (isMainThemeDark) {
+            window.statusBarColor = android.graphics.Color.parseColor("#1E1E1E")
+            insetsController.isAppearanceLightStatusBars = false
+          } else {
+            window.statusBarColor = android.graphics.Color.WHITE
+            insetsController.isAppearanceLightStatusBars = true
+          }
         }
       }
     }
@@ -1256,7 +1334,7 @@ fun MainScreen(
         },
         onWebThemeDetected = { theme ->
           (context as? Activity)?.runOnUiThread {
-            detectedWebTheme = theme
+            detectedMainTheme = theme
           }
         },
         onUserProfileDetected = { name, avatar ->
@@ -1272,12 +1350,67 @@ fun MainScreen(
       ), "AndroidApp")
       
       webViewClient = object : WebViewClient() {
+        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+          val url = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            request?.url?.toString()
+          } else {
+            null
+          }
+          return handleUrlOverride(view, url)
+        }
+
+        @Suppress("DEPRECATION")
+        override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+          return handleUrlOverride(view, url)
+        }
+
+        private fun handleUrlOverride(view: WebView?, url: String?): Boolean {
+          if (url == null) return false
+          if (url.contains("5040.me")) {
+            val isMonitoring = url.contains("statistics/sale-monitoring")
+            if (isMonitoring) {
+              isMonitoringPage = true
+              isMonitoringLoading = true
+              loadingMessage = "در حال بارگذاری مانیتورینگ"
+              view?.settings?.apply {
+                saveFormData = false
+                cacheMode = WebSettings.LOAD_NO_CACHE
+              }
+            } else {
+              view?.settings?.apply {
+                saveFormData = true
+                cacheMode = WebSettings.LOAD_DEFAULT
+              }
+            }
+            return false // Allow load
+          }
+          return true // Block external link
+        }
+
         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
           super.onPageStarted(view, url, favicon)
           isMainLoaded = false
           hasWebLoadError = false
-          val isExternal = url != null && !url.contains("5040.me")
-          loadingMessage = if (isExternal) "در حال بارگذاری" else "در حال ورود به پنل..."
+          
+          val isMonitoring = url != null && url.contains("statistics/sale-monitoring")
+          if (isMonitoring) {
+            isMonitoringPage = true
+            isMonitoringLoading = true
+            loadingMessage = "در حال بارگذاری مانیتورینگ"
+            view?.settings?.apply {
+              saveFormData = false
+              cacheMode = WebSettings.LOAD_NO_CACHE
+            }
+          } else {
+            isMonitoringPage = false
+            isMonitoringLoading = false
+            val isExternal = url != null && !url.contains("5040.me")
+            loadingMessage = if (isExternal) "در حال بارگذاری" else "در حال ورود به پنل..."
+            view?.settings?.apply {
+              saveFormData = true
+              cacheMode = WebSettings.LOAD_DEFAULT
+            }
+          }
           
           val shouldPersist = url != null && (url.contains("panel.5040.me") || url.contains("chat.5040.me"))
           if (shouldPersist) {
@@ -1289,6 +1422,17 @@ fun MainScreen(
           super.onPageFinished(view, url)
           isMainLoaded = true
           CookieManager.getInstance().flush()
+          
+          val isMonitoring = url != null && url.contains("statistics/sale-monitoring")
+          if (isMonitoring) {
+            isMonitoringLoading = false
+            view?.clearCache(true)
+            view?.clearFormData()
+            view?.clearHistory()
+          } else {
+            isMonitoringPage = false
+            isMonitoringLoading = false
+          }
           
           val shouldPersist = url != null && (url.contains("panel.5040.me") || url.contains("chat.5040.me"))
           if (shouldPersist) {
@@ -1464,7 +1608,7 @@ fun MainScreen(
         },
         onWebThemeDetected = { theme ->
           (context as? Activity)?.runOnUiThread {
-            detectedWebTheme = theme
+            detectedChatTheme = theme
           }
         },
         onUserProfileDetected = { name, avatar ->
@@ -1480,6 +1624,28 @@ fun MainScreen(
       ), "AndroidApp")
       
       webViewClient = object : WebViewClient() {
+        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+          val url = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            request?.url?.toString()
+          } else {
+            null
+          }
+          return handleUrlOverride(view, url)
+        }
+
+        @Suppress("DEPRECATION")
+        override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+          return handleUrlOverride(view, url)
+        }
+
+        private fun handleUrlOverride(view: WebView?, url: String?): Boolean {
+          if (url == null) return false
+          if (url.contains("5040.me")) {
+            return false // Allow loading
+          }
+          return true // Block external link
+        }
+
         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
           super.onPageStarted(view, url, favicon)
           val shouldPersist = url != null && (url.contains("panel.5040.me") || url.contains("chat.5040.me"))
@@ -1646,22 +1812,30 @@ fun MainScreen(
     }
   }
 
-  val isOfflineOrError = !isOnlineState || hasWebLoadError
+  val isOfflineOrError = hasWebLoadError
 
   Box(
     modifier = Modifier
       .fillMaxSize()
   ) {
+    val updatePhase = when (appUpdateState) {
+      is AppUpdateState.Idle -> AppUpdatePhase.IDLE
+      is AppUpdateState.PermissionsRequired -> AppUpdatePhase.PERMISSIONS_REQUIRED
+      is AppUpdateState.CheckingConfig -> AppUpdatePhase.CHECKING_CONFIG
+      is AppUpdateState.Downloading -> AppUpdatePhase.DOWNLOADING
+      is AppUpdateState.ReadyToInstall -> AppUpdatePhase.READY_TO_INSTALL
+    }
+
     AnimatedContent(
-      targetState = appUpdateState,
+      targetState = updatePhase,
       transitionSpec = {
         fadeIn(animationSpec = tween(500)) togetherWith fadeOut(animationSpec = tween(500))
       },
       label = "AppUpdateStateTransition",
       modifier = Modifier.fillMaxSize()
-    ) { state ->
-      when (state) {
-      is AppUpdateState.PermissionsRequired -> {
+    ) { phase ->
+      when (phase) {
+      AppUpdatePhase.PERMISSIONS_REQUIRED -> {
         PermissionsRequiredScreen(
           onGrantClick = {
             val needed = mutableListOf<String>().apply {
@@ -1674,23 +1848,25 @@ fun MainScreen(
           }
         )
       }
-      is AppUpdateState.CheckingConfig -> {
+      AppUpdatePhase.CHECKING_CONFIG -> {
         SplashLoadingScreen()
       }
-      is AppUpdateState.Downloading -> {
+      AppUpdatePhase.DOWNLOADING -> {
+        val dlState = appUpdateState as? AppUpdateState.Downloading
         UpdateProgressScreen(
-          downloadedBytes = state.downloadedBytes,
-          totalBytes = state.totalBytes
+          downloadedBytes = dlState?.downloadedBytes ?: 0L,
+          totalBytes = dlState?.totalBytes ?: 0L
         )
       }
-      is AppUpdateState.ReadyToInstall -> {
+      AppUpdatePhase.READY_TO_INSTALL -> {
+        val readyState = appUpdateState as? AppUpdateState.ReadyToInstall
         ReadyToInstallScreen(
           onInstallClick = {
-            installApk(context, state.apkFile)
+            readyState?.apkFile?.let { installApk(context, it) }
           }
         )
       }
-      is AppUpdateState.Idle -> {
+      AppUpdatePhase.IDLE -> {
         Box(
           modifier = Modifier
             .fillMaxSize()
@@ -1876,6 +2052,39 @@ fun MainScreen(
             contentColor = MaterialTheme.colorScheme.onBackground
           )
         }
+
+        // Smooth animated connection drop banner
+        AnimatedVisibility(
+          visible = !isOnlineState && isMainLoaded,
+          enter = androidx.compose.animation.slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+          exit = androidx.compose.animation.slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+          modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp)
+        ) {
+          Surface(
+            color = Color(0xFFE53935),
+            contentColor = Color.White,
+            shape = RoundedCornerShape(24.dp),
+            tonalElevation = 6.dp,
+            modifier = Modifier.padding(horizontal = 24.dp)
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              Icon(
+                imageVector = androidx.compose.material.icons.Icons.Default.Warning,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = Color.White
+              )
+              Text(
+                text = "اتصال به اینترنت قطع شد",
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+              )
+            }
+          }
+        }
       }
 
       // Chat WebView Overlay (Bubble Reveal shape animated)
@@ -1886,8 +2095,8 @@ fun MainScreen(
           Modifier
         }
 
-        val isChatDark = isWebThemeDark
-        val chatBgColor = if (isChatDark) Color(0xFF1E1E1E) else Color(0xFF6750A4)
+        val isChatDark = isChatThemeDark
+        val chatBgColor = if (isChatDark) Color(0xFF000000) else Color(0xFF6750A4)
 
         Box(
           modifier = Modifier
@@ -1927,20 +2136,20 @@ fun MainScreen(
   } // Closes AnimatedContent(targetState = isOfflineOrError)
 
       // Floating Action Button Overlay (Completely Circular, bottom-right side absolute)
-      val isChatDark = isWebThemeDark
-      val fabBgColor = if (isChatDark) {
-        if (chatExpanded) Color(0xFF2D2D2D) else Color(0xFF1E1E1E)
+      val isChatDark = isChatThemeDark
+      val fabBgColor = if (chatExpanded) {
+        if (isChatDark) Color(0xFF2D2D2D) else MaterialTheme.colorScheme.secondaryContainer
       } else {
-        if (chatExpanded) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.primaryContainer
+        Color(0xFF6750A4)
       }
-      val fabIconColor = if (isChatDark) {
-        Color.White
+      val fabIconColor = if (chatExpanded) {
+        if (isChatDark) Color.White else MaterialTheme.colorScheme.onSecondaryContainer
       } else {
-        if (chatExpanded) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onPrimaryContainer
+        Color.White
       }
 
       // Smooth color transitions based on bubbleProgress and whether chat is dark
-      val animatedFabBgColor = if (isWebThemeDark) {
+      val animatedFabBgColor = if (isChatDark) {
         androidx.compose.ui.graphics.lerp(
           start = fabBgColor,
           stop = Color(0xFF2D2D2D),
@@ -1954,7 +2163,7 @@ fun MainScreen(
         )
       }
 
-      val animatedFabIconColor = if (isWebThemeDark) {
+      val animatedFabIconColor = if (isChatDark) {
         androidx.compose.ui.graphics.lerp(
           start = fabIconColor,
           stop = Color.White, // Always clear white on dark expanded panel
@@ -1983,57 +2192,59 @@ fun MainScreen(
       val finalFabBgColor = if (hasNewChatMessage && !chatExpanded) blinkBgColor else animatedFabBgColor
       val finalIconColor = if (hasNewChatMessage && !chatExpanded) Color.White else animatedFabIconColor
 
-      Box(
-        modifier = Modifier
-          .align(AbsoluteAlignment.BottomRight)
-          .absolutePadding(bottom = 24.dp, right = 24.dp)
-          .offset(y = fabYOffset)
-          .size(56.dp)
-          .onGloballyPositioned { coordinates ->
-            if (!chatExpanded) {
-              val localPosition = coordinates.positionInParent()
-              val size = coordinates.size
-              fabPosition = Offset(
-                x = localPosition.x + size.width / 2f,
-                y = localPosition.y + size.height / 2f
-              )
-            }
-          }
-      ) {
+      if (!isMonitoringPage) {
         Box(
           modifier = Modifier
-            .fillMaxSize()
-            .shadow(elevation = 6.dp, shape = CircleShape)
-            .background(
-              color = finalFabBgColor,
-              shape = CircleShape
-            )
-            .clip(CircleShape)
-            .clickable { chatExpanded = !chatExpanded },
-          contentAlignment = Alignment.Center
+            .align(AbsoluteAlignment.BottomRight)
+            .absolutePadding(bottom = 24.dp, right = 24.dp)
+            .offset(y = fabYOffset)
+            .size(56.dp)
+            .onGloballyPositioned { coordinates ->
+              if (!chatExpanded) {
+                val localPosition = coordinates.positionInParent()
+                val size = coordinates.size
+                fabPosition = Offset(
+                  x = localPosition.x + size.width / 2f,
+                  y = localPosition.y + size.height / 2f
+                )
+              }
+            }
         ) {
           Box(
-            modifier = Modifier.graphicsLayer {
-              rotationZ = iconRotation
-            }
+            modifier = Modifier
+              .fillMaxSize()
+              .shadow(elevation = 6.dp, shape = CircleShape)
+              .background(
+                color = finalFabBgColor,
+                shape = CircleShape
+              )
+              .clip(CircleShape)
+              .clickable { chatExpanded = !chatExpanded },
+            contentAlignment = Alignment.Center
           ) {
-            if (chatExpanded) {
-              PanelLogoIcon(
-                modifier = Modifier.size(24.dp),
-                color = finalIconColor
-              )
-            } else {
-              ChatLogoIcon(
-                modifier = Modifier.size(24.dp),
-                color = finalIconColor
-              )
+            Box(
+              modifier = Modifier.graphicsLayer {
+                rotationZ = iconRotation
+              }
+            ) {
+              if (chatExpanded) {
+                PanelLogoIcon(
+                  modifier = Modifier.size(24.dp),
+                  color = finalIconColor
+                )
+              } else {
+                ChatLogoIcon(
+                  modifier = Modifier.size(24.dp),
+                  color = finalIconColor
+                )
+              }
             }
           }
         }
       }
 
       // Top-Left Floating Menu Button (smaller than bottom ones, opens the right drawer)
-      val menuBgColor = if (isWebThemeDark) {
+      val menuBgColor = if (isMainThemeDark) {
         androidx.compose.ui.graphics.lerp(
           start = MaterialTheme.colorScheme.primaryContainer,
           stop = Color(0xFF2D2D2D),
@@ -2047,7 +2258,7 @@ fun MainScreen(
         )
       }
 
-      val menuIconTint = if (isWebThemeDark) {
+      val menuIconTint = if (isMainThemeDark) {
         androidx.compose.ui.graphics.lerp(
           start = MaterialTheme.colorScheme.onPrimaryContainer,
           stop = Color.White, // Always white on dark background!
@@ -2061,23 +2272,51 @@ fun MainScreen(
         )
       }
 
-      Box(
-        modifier = Modifier
-          .align(AbsoluteAlignment.TopLeft)
-          .absolutePadding(top = 56.dp, left = 16.dp)
-          .size(44.dp)
-          .shadow(elevation = 6.dp, shape = CircleShape)
-          .background(menuBgColor, shape = CircleShape)
-          .clip(CircleShape)
-          .clickable { isDrawerOpen = true },
-        contentAlignment = Alignment.Center
-      ) {
-        Icon(
-          imageVector = Icons.Filled.Menu,
-          contentDescription = "منوی اصلی",
-          tint = menuIconTint,
-          modifier = Modifier.size(20.dp)
-        )
+      if (!isMonitoringPage) {
+        Box(
+          modifier = Modifier
+            .align(AbsoluteAlignment.TopLeft)
+            .absolutePadding(top = 56.dp, left = 16.dp)
+            .size(44.dp)
+            .shadow(elevation = 6.dp, shape = CircleShape)
+            .background(menuBgColor, shape = CircleShape)
+            .clip(CircleShape)
+            .clickable { isDrawerOpen = true },
+          contentAlignment = Alignment.Center
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Menu,
+            contentDescription = "منوی اصلی",
+            tint = menuIconTint,
+            modifier = Modifier.size(20.dp)
+          )
+        }
+      }
+
+      // Top-Right Floating Circular Back Arrow Button (exclusive to the monitoring page)
+      if (isMonitoringPage) {
+        Box(
+          modifier = Modifier
+            .align(AbsoluteAlignment.TopRight)
+            .absolutePadding(top = 56.dp, right = 16.dp)
+            .size(44.dp)
+            .shadow(elevation = 6.dp, shape = CircleShape)
+            .background(if (isMainThemeDark) Color(0xFF2D2D2D) else MaterialTheme.colorScheme.primaryContainer, shape = CircleShape)
+            .clip(CircleShape)
+            .clickable {
+              mainWebViewRef?.loadUrl("https://panel.5040.me")
+              isMonitoringPage = false
+              isMonitoringLoading = false
+            },
+          contentAlignment = Alignment.Center
+        ) {
+          Icon(
+            imageVector = androidx.compose.material.icons.Icons.Default.ArrowBack,
+            contentDescription = "بازگشت",
+            tint = if (isMainThemeDark) Color.White else MaterialTheme.colorScheme.onPrimaryContainer,
+            modifier = Modifier.size(24.dp)
+          )
+        }
       }
 
       // Persistent connection status indicator capsule temporarily removed as requested
@@ -2388,14 +2627,15 @@ fun MainScreen(
 
 
       // Floating overlays for Download Notification and Audio Player at the top center of Idle state
-      Column(
-        modifier = Modifier
-          .align(Alignment.TopCenter)
-          .fillMaxWidth()
-          .padding(top = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-      ) {
+      if (!isMonitoringPage) {
+        Column(
+          modifier = Modifier
+            .align(Alignment.TopCenter)
+            .fillMaxWidth()
+            .padding(top = 16.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp),
+          horizontalAlignment = Alignment.CenterHorizontally
+        ) {
         // 1. Download Status Bar
         activeDownloadState?.let { status ->
           var offsetX by remember { mutableStateOf(0f) }
@@ -2544,10 +2784,14 @@ fun MainScreen(
                     )
                     Text(
                       text = audioTitle ?: "فایل صوتی",
-                      style = MaterialTheme.typography.titleSmall.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                      style = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                      ),
                       color = Color.White,
                       maxLines = 1,
-                      overflow = TextOverflow.Ellipsis
+                      overflow = TextOverflow.Ellipsis,
+                      modifier = Modifier.weight(1f),
+                      textAlign = androidx.compose.ui.text.style.TextAlign.Start
                     )
                   }
                   IconButton(
@@ -2689,6 +2933,7 @@ fun MainScreen(
           }
         }
       }
+    }
     }
     }
     }
@@ -3523,6 +3768,10 @@ data class ConfigData(
   val updateVersion: String,
   val updateUrl: String
 )
+
+enum class AppUpdatePhase {
+  IDLE, PERMISSIONS_REQUIRED, CHECKING_CONFIG, DOWNLOADING, READY_TO_INSTALL
+}
 
 sealed interface AppUpdateState {
   object Idle : AppUpdateState
